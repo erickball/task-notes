@@ -2647,6 +2647,7 @@ class MainWindow(QMainWindow):
         # Enable sorting and editing
         self.active_tasks_table.setSortingEnabled(True)
         self.active_tasks_table.itemChanged.connect(self.on_task_table_item_changed)
+        self.active_tasks_table.itemClicked.connect(self.on_task_table_item_clicked)
         
         # Adjust column widths
         header = self.active_tasks_table.horizontalHeader()
@@ -2943,6 +2944,8 @@ class MainWindow(QMainWindow):
                 content_item = QTableWidgetItem(content)
                 content_item.setFlags(content_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 content_item.setData(Qt.ItemDataRole.UserRole, task['id'])  # Store note ID
+                content_item.setToolTip(f"Click to jump to this note in the tree\nNote ID: {task['id']}")
+                content_item.setForeground(QColor("#0066cc"))  # Blue color to indicate clickable
                 self.active_tasks_table.setItem(row_idx, 0, content_item)
                 
                 # Start date (editable)
@@ -3334,6 +3337,79 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_layout)
         
         dialog.exec()
+    
+    def on_task_table_item_clicked(self, item):
+        """Handle clicks on task table items - navigate to the note"""
+        # Only handle clicks on the first column (task name)
+        if item.column() != 0:
+            return
+            
+        # Get the note ID from the item data
+        note_id = item.data(Qt.ItemDataRole.UserRole)
+        if note_id:
+            self.find_and_select_note(note_id)
+            self.status_bar.showMessage(f"Jumped to note {note_id}", 2000)
+    
+    def find_and_select_note(self, note_id):
+        """Find a note by ID and select it, focusing on its subtree if necessary"""
+        def find_item_in_tree(parent_item=None):
+            """Recursively search for item with given note_id"""
+            if parent_item is None:
+                # Search from root
+                for i in range(self.tree_widget.topLevelItemCount()):
+                    found_item = find_item_in_tree(self.tree_widget.topLevelItem(i))
+                    if found_item:
+                        return found_item
+                return None
+            else:
+                # Check current item
+                if isinstance(parent_item, EditableTreeItem) and parent_item.note_id == note_id:
+                    return parent_item
+                
+                # Check children
+                for i in range(parent_item.childCount()):
+                    found_item = find_item_in_tree(parent_item.child(i))
+                    if found_item:
+                        return found_item
+                return None
+        
+        # First try to find the note in the current view
+        found_item = find_item_in_tree()
+        
+        if found_item:
+            # Found it in current view - select and scroll to it
+            self.tree_widget.clearSelection()
+            self.tree_widget.setCurrentItem(found_item)
+            found_item.setSelected(True)
+            self.tree_widget.scrollToItem(found_item)
+            return True
+        
+        # If not found in current view, get the note data and check if we need to focus on a different subtree
+        note_data = self.db.get_note(note_id)
+        if not note_data:
+            self.status_bar.showMessage(f"Note {note_id} not found", 3000)
+            return False
+        
+        # Get the note's path to determine which subtree contains it
+        note_path = note_data['path']
+        path_parts = note_path.split('.')
+        
+        # If we're currently focused on a subtree, try switching back to root view
+        current_focus = self.tree_widget.get_focused_root()
+        if current_focus != 1:  # Not at root
+            # Focus on root and try again
+            self.tree_widget.focus_on_subtree(1)
+            found_item = find_item_in_tree()
+            
+            if found_item:
+                self.tree_widget.clearSelection()
+                self.tree_widget.setCurrentItem(found_item)
+                found_item.setSelected(True)
+                self.tree_widget.scrollToItem(found_item)
+                return True
+        
+        self.status_bar.showMessage(f"Note {note_id} not currently visible", 3000)
+        return False
     
     def closeEvent(self, event):
         """Handle application closing"""
