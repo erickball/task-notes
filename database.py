@@ -87,6 +87,87 @@ class DatabaseManager:
         
         print("Path rebuilding completed")
     
+    def get_notes_by_date(self, date_str: str, activity_type: str = 'all'):
+        """Get notes created or modified on a specific date
+        
+        Args:
+            date_str: Date in YYYY-MM-DD format
+            activity_type: 'created', 'modified', or 'all'
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            if activity_type == 'created':
+                query = """
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                           'created' as activity_type, n.created_at as activity_time
+                    FROM notes n
+                    LEFT JOIN tasks t ON n.id = t.note_id
+                    WHERE date(n.created_at) = ?
+                    ORDER BY n.created_at DESC
+                """
+                cursor = conn.execute(query, (date_str,))
+            elif activity_type == 'modified':
+                query = """
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                           'modified' as activity_type, n.modified_at as activity_time
+                    FROM notes n
+                    LEFT JOIN tasks t ON n.id = t.note_id
+                    WHERE date(n.modified_at) = ? AND date(n.created_at) != ?
+                    ORDER BY n.modified_at DESC
+                """
+                cursor = conn.execute(query, (date_str, date_str))
+            else:  # 'all'
+                query = """
+                    SELECT * FROM (
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                               'created' as activity_type, n.created_at as activity_time
+                        FROM notes n
+                        LEFT JOIN tasks t ON n.id = t.note_id
+                        WHERE date(n.created_at) = ?
+                        
+                        UNION
+                        
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                               'modified' as activity_type, n.modified_at as activity_time
+                        FROM notes n
+                        LEFT JOIN tasks t ON n.id = t.note_id
+                        WHERE date(n.modified_at) = ? AND date(n.created_at) != ?
+                    )
+                    ORDER BY activity_time DESC
+                """
+                cursor = conn.execute(query, (date_str, date_str, date_str))
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
+    def get_activity_dates(self, limit: int = 30):
+        """Get dates with note activity (created or modified) for calendar/picker"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT DISTINCT date(created_at) as activity_date, 
+                       COUNT(*) as note_count,
+                       'created' as activity_type
+                FROM notes 
+                WHERE created_at IS NOT NULL
+                GROUP BY date(created_at)
+                
+                UNION
+                
+                SELECT DISTINCT date(modified_at) as activity_date,
+                       COUNT(*) as note_count, 
+                       'modified' as activity_type
+                FROM notes 
+                WHERE modified_at IS NOT NULL 
+                  AND date(modified_at) != date(created_at)
+                GROUP BY date(modified_at)
+                
+                ORDER BY activity_date DESC
+                LIMIT ?
+            """, (limit,))
+            
+            return [dict(row) for row in cursor.fetchall()]
+    
     def init_database(self):
         """Initialize the database with required tables"""
         with sqlite3.connect(self.db_path) as conn:

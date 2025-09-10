@@ -1822,7 +1822,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Task Notes")
-        self.setGeometry(100, 100, 1000, 700)
+        self.setGeometry(100, 100, 1400, 900)
         
         # Initialize database
         self.db = DatabaseManager()
@@ -1871,9 +1871,13 @@ class MainWindow(QMainWindow):
         self.task_dashboard = self.create_task_dashboard()
         right_splitter.addWidget(self.task_dashboard)
         
+        # Create history panel
+        self.history_panel = self.create_history_panel()
+        right_splitter.addWidget(self.history_panel)
+        
         # Set initial splitter proportions - wider side panel for task table
-        splitter.setSizes([600, 400])  # More space for right panel with task table
-        right_splitter.setSizes([200, 200])  # Equal space for details and tasks
+        splitter.setSizes([600, 600])  # More space for right panel with task table
+        right_splitter.setSizes([150, 150, 100])  # Space for details, tasks, and history
         
         # Connect tree selection to details update
         self.tree_widget.itemSelectionChanged.connect(self.update_details_panel)
@@ -1893,6 +1897,9 @@ class MainWindow(QMainWindow):
         
         # Add current database to recent files
         self.add_to_recent_files(self.db.get_current_database_path())
+        
+        # Initialize history panel
+        self.update_history_panel()
     
     def create_breadcrumb_widget(self):
         """Create the breadcrumb navigation widget"""
@@ -2016,6 +2023,136 @@ class MainWindow(QMainWindow):
         if depth > old_depth or old_depth <= 10:
             self.tree_widget.load_tree()
             self.status_bar.showMessage(f"Tree depth set to {depth if depth < 999 else 'unlimited'} levels", 2000)
+    
+    def set_history_date(self, date_obj):
+        """Set the history date and update the panel"""
+        self.history_date.setDate(date_obj)
+        # The dateChanged signal will automatically trigger update_history_panel
+    
+    def update_history_panel(self):
+        """Update the history panel with notes from the selected date"""
+        if not hasattr(self, 'history_list'):
+            return
+        
+        # Get selected date and filter
+        selected_qdate = self.history_date.date()
+        date_str = selected_qdate.toString('yyyy-MM-dd')
+        
+        filter_text = self.history_filter.currentText()
+        if filter_text == "Created":
+            activity_type = "created"
+        elif filter_text == "Modified":
+            activity_type = "modified"
+        else:
+            activity_type = "all"
+        
+        # Get notes for the selected date
+        notes = self.db.get_notes_by_date(date_str, activity_type)
+        
+        # Clear and populate the list
+        self.history_list.clear()
+        
+        if not notes:
+            item = QListWidgetItem("No activity on this date")
+            item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
+            item.setForeground(QColor("gray"))
+            self.history_list.addItem(item)
+            return
+        
+        for note in notes:
+            # Create display text
+            content = note['content'][:50] + "..." if len(note['content']) > 50 else note['content']
+            if not content.strip():
+                content = "(empty note)"
+            
+            # Add task indicator if it's a task
+            if note['task_status']:
+                if note['task_status'] == 'complete':
+                    content = "☑ " + content
+                elif note['task_status'] == 'active':
+                    content = "☐ " + content
+            
+            # Format time
+            activity_time = note['activity_time']
+            try:
+                if 'T' in activity_time:
+                    time_part = activity_time.split('T')[1].split('.')[0]  # Get HH:MM:SS
+                    time_part = time_part[:5]  # Just HH:MM
+                else:
+                    time_part = activity_time[-8:-3]  # Last 5 chars should be HH:MM
+            except:
+                time_part = "--:--"
+            
+            # Create list item
+            activity_label = "📝" if note['activity_type'] == 'created' else "✏️"
+            item_text = f"{activity_label} {time_part} - {content}"
+            
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.ItemDataRole.UserRole, note['id'])  # Store note ID
+            self.history_list.addItem(item)
+    
+    def on_history_item_clicked(self, item):
+        """Handle clicks on history items - navigate to the note"""
+        note_id = item.data(Qt.ItemDataRole.UserRole)
+        if note_id is None:
+            return
+        
+        # Find and select the note in the tree
+        self.find_and_select_note(note_id)
+    
+    def find_and_select_note(self, note_id):
+        """Find a note by ID and select it, focusing on its subtree if necessary"""
+        # First try to find it in the current tree view
+        found_item = self.find_item_in_tree(note_id)
+        
+        if found_item:
+            # Found in current view - select it
+            self.tree_widget.clearSelection()
+            self.tree_widget.setCurrentItem(found_item)
+            found_item.setSelected(True)
+            self.tree_widget.scrollToItem(found_item)
+            return
+        
+        # Not found in current view - get the note and focus on its parent's subtree
+        note_data = self.db.get_note(note_id)
+        if not note_data:
+            self.status_bar.showMessage(f"Note {note_id} not found", 3000)
+            return
+        
+        # If we're in a focused subtree, try going to root first
+        if self.tree_widget.get_focused_root() != 1:
+            self.tree_widget.focus_on_subtree(1)  # Go to root
+            # Try again to find it
+            found_item = self.find_item_in_tree(note_id)
+            if found_item:
+                self.tree_widget.clearSelection()
+                self.tree_widget.setCurrentItem(found_item)
+                found_item.setSelected(True)
+                self.tree_widget.scrollToItem(found_item)
+                return
+        
+        # Still not found - the note might be in a collapsed branch
+        self.status_bar.showMessage(f"Note found but may be in collapsed branch (ID: {note_id})", 3000)
+    
+    def find_item_in_tree(self, note_id):
+        """Recursively search for a tree item by note ID"""
+        def search_item(item):
+            if isinstance(item, EditableTreeItem) and item.note_id == note_id:
+                return item
+            
+            for i in range(item.childCount()):
+                result = search_item(item.child(i))
+                if result:
+                    return result
+            return None
+        
+        # Search through all top-level items
+        for i in range(self.tree_widget.topLevelItemCount()):
+            result = search_item(self.tree_widget.topLevelItem(i))
+            if result:
+                return result
+        
+        return None
     
     def rebuild_note_paths(self):
         """Rebuild all note paths for consistency"""
@@ -2689,6 +2826,102 @@ class MainWindow(QMainWindow):
         
         return widget
     
+    def create_history_panel(self):
+        """Create the history panel"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Title with date picker
+        title_layout = QHBoxLayout()
+        title = QLabel("History")
+        title.setStyleSheet("font-weight: bold; font-size: 14px;")
+        title_layout.addWidget(title)
+        
+        # Date picker
+        from datetime import date
+        self.history_date = QDateEdit()
+        self.history_date.setDate(date.today())
+        self.history_date.setCalendarPopup(True)
+        self.history_date.dateChanged.connect(self.update_history_panel)
+        title_layout.addWidget(self.history_date)
+        
+        title_layout.addStretch()
+        layout.addLayout(title_layout)
+        
+        # Activity filter
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Show:"))
+        
+        self.history_filter = QComboBox()
+        self.history_filter.addItems(["All Activity", "Created", "Modified"])
+        self.history_filter.currentTextChanged.connect(self.update_history_panel)
+        filter_layout.addWidget(self.history_filter)
+        
+        filter_layout.addStretch()
+        layout.addLayout(filter_layout)
+        
+        # History list
+        self.history_list = QListWidget()
+        self.history_list.itemClicked.connect(self.on_history_item_clicked)
+        layout.addWidget(self.history_list)
+        
+        # Quick date buttons
+        quick_dates_layout = QHBoxLayout()
+        
+        today_btn = QPushButton("Today")
+        today_btn.clicked.connect(lambda: self.set_history_date(date.today()))
+        quick_dates_layout.addWidget(today_btn)
+        
+        yesterday_btn = QPushButton("Yesterday")
+        from datetime import timedelta
+        yesterday_btn.clicked.connect(lambda: self.set_history_date(date.today() - timedelta(days=1)))
+        quick_dates_layout.addWidget(yesterday_btn)
+        
+        quick_dates_layout.addStretch()
+        layout.addLayout(quick_dates_layout)
+        
+        widget.setStyleSheet("""
+            QWidget {
+                border: 1px solid #ccc;
+                border-radius: 5px;
+                background-color: #f8f8ff;
+            }
+            QLabel {
+                border: none;
+                background: transparent;
+                padding: 2px;
+            }
+            QListWidget {
+                border: 1px solid #ddd;
+                background-color: white;
+                border-radius: 3px;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid #eee;
+            }
+            QListWidget::item:hover {
+                background-color: #e6f3ff;
+            }
+            QListWidget::item:selected {
+                background-color: #cce7ff;
+            }
+            QPushButton {
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                background-color: white;
+                padding: 4px 8px;
+                min-width: 60px;
+            }
+            QPushButton:hover {
+                background-color: #e6f3ff;
+                border-color: #0078d4;
+            }
+        """)
+        
+        return widget
+    
     def get_breadcrumb_path(self, note_data):
         """Get breadcrumb path for a note"""
         path = note_data.get('path', '')
@@ -2944,8 +3177,9 @@ class MainWindow(QMainWindow):
                 content_item = QTableWidgetItem(content)
                 content_item.setFlags(content_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 content_item.setData(Qt.ItemDataRole.UserRole, task['id'])  # Store note ID
+                # Add visual indication that this is clickable
                 content_item.setToolTip(f"Click to jump to this note in the tree\nNote ID: {task['id']}")
-                content_item.setForeground(QColor("#0066cc"))  # Blue color to indicate clickable
+                content_item.setForeground(QColor("#0066cc"))  # Blue color to indicate it's clickable
                 self.active_tasks_table.setItem(row_idx, 0, content_item)
                 
                 # Start date (editable)
@@ -2983,9 +3217,37 @@ class MainWindow(QMainWindow):
             
             # Re-enable signals after all updates are complete
             self.active_tasks_table.blockSignals(False)
+    
+    def on_task_table_item_clicked(self, item):
+        """Handle clicks on task table items - navigate to the note"""
+        if not item:
+            return
+        
+        try:
+            # Get the note ID from the first column of the same row
+            row = item.row()
+            first_column_item = self.active_tasks_table.item(row, 0)
+            if not first_column_item:
+                return
             
-            # Resize table to contents
-            self.active_tasks_table.resizeRowsToContents()
+            note_id = first_column_item.data(Qt.ItemDataRole.UserRole)
+            if note_id is None:
+                return
+            
+            # Navigate to the note (works for any column)
+            self.find_and_select_note(note_id)
+            
+            # Give visual feedback - safely get task name
+            try:
+                task_name = first_column_item.text().replace('...', '')
+                self.status_bar.showMessage(f"Jumped to task: {task_name}", 2000)
+            except RuntimeError:
+                # Item was deleted during update - just show generic message
+                self.status_bar.showMessage(f"Jumped to note {note_id}", 2000)
+                
+        except (RuntimeError, AttributeError) as e:
+            # Handle case where table items were deleted during update
+            self.status_bar.showMessage("Unable to navigate - table is being updated", 2000)
     
     def update_start_date(self):
         """Update the start date for the current task"""
@@ -3337,79 +3599,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(button_layout)
         
         dialog.exec()
-    
-    def on_task_table_item_clicked(self, item):
-        """Handle clicks on task table items - navigate to the note"""
-        # Only handle clicks on the first column (task name)
-        if item.column() != 0:
-            return
-            
-        # Get the note ID from the item data
-        note_id = item.data(Qt.ItemDataRole.UserRole)
-        if note_id:
-            self.find_and_select_note(note_id)
-            self.status_bar.showMessage(f"Jumped to note {note_id}", 2000)
-    
-    def find_and_select_note(self, note_id):
-        """Find a note by ID and select it, focusing on its subtree if necessary"""
-        def find_item_in_tree(parent_item=None):
-            """Recursively search for item with given note_id"""
-            if parent_item is None:
-                # Search from root
-                for i in range(self.tree_widget.topLevelItemCount()):
-                    found_item = find_item_in_tree(self.tree_widget.topLevelItem(i))
-                    if found_item:
-                        return found_item
-                return None
-            else:
-                # Check current item
-                if isinstance(parent_item, EditableTreeItem) and parent_item.note_id == note_id:
-                    return parent_item
-                
-                # Check children
-                for i in range(parent_item.childCount()):
-                    found_item = find_item_in_tree(parent_item.child(i))
-                    if found_item:
-                        return found_item
-                return None
-        
-        # First try to find the note in the current view
-        found_item = find_item_in_tree()
-        
-        if found_item:
-            # Found it in current view - select and scroll to it
-            self.tree_widget.clearSelection()
-            self.tree_widget.setCurrentItem(found_item)
-            found_item.setSelected(True)
-            self.tree_widget.scrollToItem(found_item)
-            return True
-        
-        # If not found in current view, get the note data and check if we need to focus on a different subtree
-        note_data = self.db.get_note(note_id)
-        if not note_data:
-            self.status_bar.showMessage(f"Note {note_id} not found", 3000)
-            return False
-        
-        # Get the note's path to determine which subtree contains it
-        note_path = note_data['path']
-        path_parts = note_path.split('.')
-        
-        # If we're currently focused on a subtree, try switching back to root view
-        current_focus = self.tree_widget.get_focused_root()
-        if current_focus != 1:  # Not at root
-            # Focus on root and try again
-            self.tree_widget.focus_on_subtree(1)
-            found_item = find_item_in_tree()
-            
-            if found_item:
-                self.tree_widget.clearSelection()
-                self.tree_widget.setCurrentItem(found_item)
-                found_item.setSelected(True)
-                self.tree_widget.scrollToItem(found_item)
-                return True
-        
-        self.status_bar.showMessage(f"Note {note_id} not currently visible", 3000)
-        return False
     
     def closeEvent(self, event):
         """Handle application closing"""
