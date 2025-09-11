@@ -376,7 +376,9 @@ class NoteTreeWidget(QTreeWidget):
             self.finish_editing()
         
         # Create in database
+        print(f"Creating child note at position 0 under parent {parent_item.note_id}")
         new_id = self.db.create_note(parent_item.note_id, "", 0)  # Insert at position 0
+        print(f"Created child note with ID {new_id}")
         
         # Add to tree
         new_note_data = self.db.get_note(new_id)
@@ -419,7 +421,9 @@ class NoteTreeWidget(QTreeWidget):
                 insert_position = self.indexOfTopLevelItem(sibling_item) + 1
         
         # Create in database
+        print(f"Creating sibling note at position {insert_position} under parent {parent_id}")
         new_id = self.db.create_note(parent_id, "", insert_position)
+        print(f"Created sibling note with ID {new_id}")
         
         # Add to tree
         new_note_data = self.db.get_note(new_id)
@@ -1767,7 +1771,9 @@ class NoteTreeWidget(QTreeWidget):
             moved_note_ids = [item.note_id for item in selected_items]
             
             for i, item in enumerate(selected_items):
-                self.db.move_note(item.note_id, target_parent_id, target_position + i)
+                final_position = target_position + i
+                print(f"Moving note {item.note_id} to parent {target_parent_id}, position {final_position}")
+                self.db.move_note(item.note_id, target_parent_id, final_position)
             
             # Accept the event and use delayed refresh
             event.accept()
