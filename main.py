@@ -801,8 +801,15 @@ class NoteTreeWidget(QTreeWidget):
             else:
                 new_content = full_content
             
-            # Save to database
-            self.db.update_note(self.editing_item.note_id, new_content)
+            # Parse and extract priority and dates from content
+            parsed_content, priority, start_date, due_date = self.parse_note_content(new_content)
+            
+            # Save parsed content to database
+            self.db.update_note(self.editing_item.note_id, parsed_content)
+            
+            # Update task fields if this note is a task and we found parsed values
+            if self.editing_item.note_data.get('task_status') and (priority is not None or start_date or due_date):
+                self.update_parsed_task_fields(self.editing_item.note_id, priority, start_date, due_date)
             
             # Update item with fresh data from database (includes updated modified_at)
             updated_note_data = self.db.get_note(self.editing_item.note_id)
@@ -831,6 +838,107 @@ class NoteTreeWidget(QTreeWidget):
                 self.edit_widget.deleteLater()
                 self.edit_widget = None
             self.editing_item = None
+    
+    def parse_note_content(self, content):
+        """Parse note content for priority and date patterns, return cleaned content and extracted values"""
+        import re
+        
+        original_content = content
+        priority = None
+        start_date = None
+        due_date = None
+        
+        # Split content into words for parsing
+        words = content.split()
+        if not words:
+            return content, priority, start_date, due_date
+        
+        # 1. Check for priority pattern (p0-p5) at the end
+        if words and re.match(r'^p[0-5]$', words[-1].lower()):
+            priority_str = words[-1].lower()
+            priority = int(priority_str[1])  # Extract number after 'p'
+            words = words[:-1]  # Remove priority from words
+            print(f"Parsed priority: {priority}")
+        
+        # Rejoin words for date parsing
+        remaining_text = ' '.join(words)
+        
+        # 2. Check for due date pattern (due ...)
+        due_match = re.search(r'\bdue\s+(.+?)(?:\s+start\s|$)', remaining_text, re.IGNORECASE)
+        if due_match:
+            due_text = due_match.group(1).strip()
+            try:
+                parsed_due = parse_natural_date(due_text)
+                if parsed_due:
+                    due_date = parsed_due.isoformat()
+                    # Remove the "due ..." part from text
+                    remaining_text = remaining_text[:due_match.start()] + remaining_text[due_match.end():]
+                    remaining_text = remaining_text.strip()
+                    print(f"Parsed due date: '{due_text}' -> {due_date}")
+            except Exception as e:
+                print(f"Failed to parse due date '{due_text}': {e}")
+        
+        # 3. Check for start date pattern (start ...)
+        start_match = re.search(r'\bstart\s+(.+?)(?:\s+due\s|$)', remaining_text, re.IGNORECASE)
+        if start_match:
+            start_text = start_match.group(1).strip()
+            try:
+                parsed_start = parse_natural_date(start_text)
+                if parsed_start:
+                    start_date = parsed_start.isoformat()
+                    # Remove the "start ..." part from text
+                    remaining_text = remaining_text[:start_match.start()] + remaining_text[start_match.end():]
+                    remaining_text = remaining_text.strip()
+                    print(f"Parsed start date: '{start_text}' -> {start_date}")
+            except Exception as e:
+                print(f"Failed to parse start date '{start_text}': {e}")
+        
+        # Clean up any extra whitespace
+        cleaned_content = ' '.join(remaining_text.split())
+        
+        return cleaned_content, priority, start_date, due_date
+    
+    def update_parsed_task_fields(self, note_id, priority, start_date, due_date):
+        """Update task fields with parsed values from note content"""
+        try:
+            import sqlite3
+            with sqlite3.connect(self.db.db_path) as conn:
+                updates = []
+                params = []
+                
+                if priority is not None:
+                    updates.append("priority = ?")
+                    params.append(priority)
+                
+                if start_date:
+                    updates.append("start_date = ?")
+                    params.append(start_date)
+                
+                if due_date:
+                    updates.append("due_date = ?")
+                    params.append(due_date)
+                
+                if updates:
+                    query = f"UPDATE tasks SET {', '.join(updates)} WHERE note_id = ?"
+                    params.append(note_id)
+                    conn.execute(query, params)
+                    conn.commit()
+                    
+                    # Auto-commit to git if available
+                    if self.db.git_vc:
+                        changes = []
+                        if priority is not None:
+                            changes.append(f"priority to {priority}")
+                        if start_date:
+                            changes.append(f"start date to {start_date}")
+                        if due_date:
+                            changes.append(f"due date to {due_date}")
+                        self.db.git_vc.commit_changes(f"Update task {note_id}: {', '.join(changes)}")
+                    
+                    print(f"Updated task {note_id} with parsed values")
+                    
+        except Exception as e:
+            print(f"Error updating task fields: {e}")
     
     def on_text_changed(self):
         """Handle text changes to resize edit widget"""
@@ -1915,6 +2023,20 @@ class MainWindow(QMainWindow):
                 "pip install pygit2"
             )
         
+        # Check if natural language date parsing is available and warn if not
+        if not DATEUTIL_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Natural Language Date Parsing Not Available", 
+                "The python-dateutil library is not installed, so natural language date parsing is disabled.\n\n"
+                "Without dateutil support:\n"
+                "• Cannot parse dates like 'tomorrow', 'next week', 'in 3 days'\n"
+                "• Only ISO format dates work (2023-12-25)\n"
+                "• Task scheduling is less flexible\n\n"
+                "To enable natural language date parsing, install python-dateutil:\n"
+                "pip install python-dateutil"
+            )
+        
         # Create main widget with splitter for resizable panes
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -2979,6 +3101,21 @@ class MainWindow(QMainWindow):
         header.resizeSection(2, 100)  # Due Date
         header.resizeSection(3, 80)   # Priority
         
+        # Add smart sort button
+        smart_sort_button = QPushButton("🔄 Smart Sort")
+        smart_sort_button.setToolTip("Return to intelligent categorized sorting")
+        smart_sort_button.setMaximumWidth(120)
+        smart_sort_button.clicked.connect(self.restore_smart_sort)
+        
+        # Create horizontal layout for button to prevent stretching
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(smart_sort_button)
+        button_layout.addStretch()  # Push button to left
+        
+        button_widget = QWidget()
+        button_widget.setLayout(button_layout)
+        layout.addWidget(button_widget)
+        
         layout.addWidget(self.active_tasks_table)
         
         widget.setStyleSheet("""
@@ -3006,6 +3143,22 @@ class MainWindow(QMainWindow):
                 padding: 4px;
                 border: 1px solid #ccc;
                 font-weight: bold;
+            }
+            QPushButton {
+                background-color: #e0e0e0;
+                border: 2px solid #aaa;
+                border-radius: 4px;
+                padding: 6px 12px;
+                font-weight: bold;
+                color: #333;
+            }
+            QPushButton:hover {
+                background-color: #d0d0d0;
+                border-color: #888;
+            }
+            QPushButton:pressed {
+                background-color: #c0c0c0;
+                border-color: #666;
             }
         """)
         
@@ -3807,8 +3960,8 @@ class MainWindow(QMainWindow):
             due_date = task['due_date']
             content = task['content']
             
-            # Priority 0 (None) should be at the top, then descending priority
-            priority_sort = (0 if priority == 0 else 1, -priority if priority != 0 else 0)
+            # Priority 0 (None) should be at the bottom, then ascending priority (lower numbers = higher priority)
+            priority_sort = (1 if priority == 0 else 0, priority if priority != 0 else 999)
             
             # Due date sorting (None dates go to end)
             if due_date:
@@ -3832,6 +3985,48 @@ class MainWindow(QMainWindow):
         
         # Combine categories in order: in progress, upcoming, misc
         return in_progress + upcoming + misc
+    
+    def restore_smart_sort(self):
+        """Restore intelligent categorized sorting and refresh the dashboard"""
+        print("Smart sort button clicked!")  # Debug
+        
+        # Get current table contents for debugging
+        before_items = []
+        for row in range(self.active_tasks_table.rowCount()):
+            item = self.active_tasks_table.item(row, 0)
+            if item:
+                before_items.append(item.text())
+        print(f"Before smart sort: {before_items}")
+        
+        # Disable table sorting to allow custom sorting
+        self.active_tasks_table.setSortingEnabled(False)
+        
+        # Clear any existing sort indicator and reset sort state
+        header = self.active_tasks_table.horizontalHeader()
+        header.setSortIndicatorShown(False)
+        
+        # Clear the sort indicator completely - this is key!
+        header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
+        
+        # Refresh the dashboard with smart sorting
+        self.update_task_dashboard()
+        
+        # Get table contents after refresh for debugging
+        after_items = []
+        for row in range(self.active_tasks_table.rowCount()):
+            item = self.active_tasks_table.item(row, 0)
+            if item:
+                after_items.append(item.text())
+        print(f"After smart sort: {after_items}")
+        
+        # Re-enable table sorting for future manual sorting, but don't show indicator yet
+        self.active_tasks_table.setSortingEnabled(True)
+        # Don't restore setSortIndicatorShown(True) - let user click columns to sort again
+        
+        if before_items != after_items:
+            self.status_bar.showMessage("Restored smart categorized sorting", 2000)
+        else:
+            self.status_bar.showMessage("Smart sort: No change detected", 2000)
     
     def increase_font_size(self):
         """Increase font size by 1 point"""

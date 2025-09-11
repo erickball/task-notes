@@ -13,7 +13,13 @@ except ImportError:
 class DatabaseManager:
     def __init__(self, db_path: str = "notes.db"):
         self.db_path = db_path
-        self.git_vc = GitVersionControl() if GIT_AVAILABLE else None
+        # Initialize git in the same directory as the database file
+        if GIT_AVAILABLE:
+            import os
+            db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+            self.git_vc = GitVersionControl(db_dir)
+        else:
+            self.git_vc = None
         self.init_database()
         
         # Commit initial state if git is available
@@ -27,7 +33,9 @@ class DatabaseManager:
         
         # Reinitialize git for new database location
         if GIT_AVAILABLE:
-            self.git_vc = GitVersionControl()
+            import os
+            db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
+            self.git_vc = GitVersionControl(db_dir)
     
     def save_database_as(self, new_db_path: str):
         """Save current database to a new file"""
@@ -46,7 +54,9 @@ class DatabaseManager:
         
         # Reinitialize git for new location
         if GIT_AVAILABLE:
-            self.git_vc = GitVersionControl()
+            import os
+            db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
+            self.git_vc = GitVersionControl(db_dir)
             self.git_vc.commit_changes(f"Saved from {old_path}")
         
         return True
