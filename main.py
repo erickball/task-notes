@@ -858,10 +858,7 @@ class NoteTreeWidget(QTreeWidget):
             self.change_indentation(-1)
             return
         
-        # Don't handle Ctrl+Return here - let the menu action handle it
-        if modifiers & Qt.KeyboardModifier.ControlModifier and key == Qt.Key.Key_Return:
-            super().keyPressEvent(event)
-            return
+        # Return/Enter handling is now done in eventFilter for editing mode
         
         # Note: Other editing mode shortcuts are handled in eventFilter
         if not self.editing_item:
@@ -1537,6 +1534,28 @@ class NoteTreeWidget(QTreeWidget):
                 self.delete_empty_note_and_select_previous()
                 return True
                 
+            # Handle Return/Enter keys for note creation and newlines
+            elif key == Qt.Key.Key_Return or key == Qt.Key.Key_Enter:
+                if modifiers & Qt.KeyboardModifier.ControlModifier:
+                    # Ctrl+Return: Create child note
+                    current_item = self.editing_item
+                    self.finish_editing()
+                    if current_item:
+                        self.create_child_note(current_item)
+                    return True
+                elif modifiers & Qt.KeyboardModifier.ShiftModifier:
+                    # Shift+Return: Insert newline in current note
+                    cursor = self.edit_widget.textCursor()
+                    cursor.insertText("\n")
+                    return True
+                else:
+                    # Return: Create sibling note
+                    current_item = self.editing_item
+                    self.finish_editing()
+                    if current_item:
+                        self.create_sibling_note(current_item)
+                    return True
+                
             # Handle Escape
             elif key == Qt.Key.Key_Escape:
                 self.finish_editing()
@@ -1881,6 +1900,20 @@ class MainWindow(QMainWindow):
         # Initialize database with last opened database path
         last_db_path = self.load_last_database_path()
         self.db = DatabaseManager(last_db_path)
+        
+        # Check if git functionality is available and warn if not
+        if not GIT_AVAILABLE:
+            QMessageBox.warning(
+                self, 
+                "Git Version Control Not Available",
+                "The pygit2 library is not installed, so version control features are disabled.\n\n"
+                "Without git support:\n"
+                "• No undo/redo functionality\n"
+                "• No version history tracking\n"
+                "• Changes are only saved to the database\n\n"
+                "To enable full version control, install pygit2:\n"
+                "pip install pygit2"
+            )
         
         # Create main widget with splitter for resizable panes
         central_widget = QWidget()
@@ -2256,10 +2289,12 @@ class MainWindow(QMainWindow):
             return
         
         # Ask for new database location
+        import os
+        default_path = os.path.expanduser("~/notes.db")
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "New Database",
-            "notes.db",
+            default_path,
             "Database files (*.db);;All files (*)"
         )
         
@@ -2292,10 +2327,12 @@ class MainWindow(QMainWindow):
     
     def open_database(self):
         """Open an existing database file"""
+        import os
+        home_dir = os.path.expanduser("~")
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Database",
-            "",
+            home_dir,
             "Database files (*.db);;All files (*)"
         )
         
@@ -2407,11 +2444,14 @@ class MainWindow(QMainWindow):
         """Load last opened database path from settings"""
         try:
             import json
+            import os
             with open("settings.json", "r") as f:
                 settings = json.load(f)
-                return settings.get("last_database_path", "notes.db")
+                default_path = os.path.expanduser("~/notes.db")
+                return settings.get("last_database_path", default_path)
         except Exception:
-            return "notes.db"
+            import os
+            return os.path.expanduser("~/notes.db")
     
     def save_last_database_path(self, db_path):
         """Save last opened database path to settings"""
@@ -2600,7 +2640,7 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         
         new_action = QAction("New Note", self)
-        new_action.setShortcut("Ctrl+Return")
+        new_action.setShortcut("Ctrl+N")
         new_action.triggered.connect(self.create_new_note_from_menu)
         file_menu.addAction(new_action)
         
@@ -2760,8 +2800,7 @@ class MainWindow(QMainWindow):
         
         # Add new note button
         new_note_action = QAction("📝 New Note", self)
-        new_note_action.setShortcut("Ctrl+Return")
-        new_note_action.setToolTip("Create new note (Ctrl+Enter)")
+        new_note_action.setToolTip("Create new note")
         new_note_action.triggered.connect(self.tree_widget.create_new_note)
         toolbar.addAction(new_note_action)
         
