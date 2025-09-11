@@ -99,7 +99,7 @@ class DatabaseManager:
             
             if activity_type == 'created':
                 query = """
-                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
                            'created' as activity_type, n.created_at as activity_time
                     FROM notes n
                     LEFT JOIN tasks t ON n.id = t.note_id
@@ -109,7 +109,7 @@ class DatabaseManager:
                 cursor = conn.execute(query, (date_str,))
             elif activity_type == 'modified':
                 query = """
-                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
                            'modified' as activity_type, n.modified_at as activity_time
                     FROM notes n
                     LEFT JOIN tasks t ON n.id = t.note_id
@@ -120,7 +120,7 @@ class DatabaseManager:
             else:  # 'all'
                 query = """
                     SELECT * FROM (
-                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
                                'created' as activity_type, n.created_at as activity_time
                         FROM notes n
                         LEFT JOIN tasks t ON n.id = t.note_id
@@ -128,15 +128,23 @@ class DatabaseManager:
                         
                         UNION
                         
-                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date,
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
                                'modified' as activity_type, n.modified_at as activity_time
                         FROM notes n
                         LEFT JOIN tasks t ON n.id = t.note_id
                         WHERE date(n.modified_at) = ? AND date(n.created_at) != ?
+                        
+                        UNION
+                        
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                               'completed' as activity_type, t.completed_at as activity_time
+                        FROM notes n
+                        JOIN tasks t ON n.id = t.note_id
+                        WHERE date(t.completed_at) = ? AND t.completed_at IS NOT NULL
                     )
                     ORDER BY activity_time DESC
                 """
-                cursor = conn.execute(query, (date_str, date_str, date_str))
+                cursor = conn.execute(query, (date_str, date_str, date_str, date_str))
             
             return [dict(row) for row in cursor.fetchall()]
     
@@ -192,6 +200,7 @@ class DatabaseManager:
                     priority INTEGER DEFAULT 0,
                     start_date DATETIME,
                     due_date DATETIME,
+                    completed_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -214,6 +223,12 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 pass  # Column already exists
             
+            # Add completed_at column to tasks table if it doesn't exist
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TIMESTAMP")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            
             conn.commit()
     
     def get_children(self, parent_id: int) -> List[Dict]:
@@ -221,7 +236,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
                 FROM notes n
                 LEFT JOIN tasks t ON n.id = t.note_id
                 WHERE n.parent_id = ? 
@@ -321,7 +336,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
                 FROM notes n
                 LEFT JOIN tasks t ON n.id = t.note_id
                 WHERE n.id = ?
@@ -330,7 +345,7 @@ class DatabaseManager:
             return dict(row) if row else None
     
     def toggle_task(self, note_id: int) -> str:
-        """Toggle task status for a note: no task -> active -> complete -> no task"""
+        """Toggle task status for a note: no task -> active -> complete -> cancelled -> no task"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("SELECT status FROM tasks WHERE note_id = ?", (note_id,))
             task = cursor.fetchone()
@@ -338,20 +353,24 @@ class DatabaseManager:
             if task:
                 current_status = task[0]
                 if current_status == 'active':
-                    # Active -> Complete
+                    # Active -> Complete (set completed_at timestamp)
                     new_status = 'complete'
-                    conn.execute("UPDATE tasks SET status = ? WHERE note_id = ?", (new_status, note_id))
-                else:  # complete or any other status
-                    # Complete -> Remove task (no task)
+                    conn.execute("UPDATE tasks SET status = ?, completed_at = CURRENT_TIMESTAMP WHERE note_id = ?", (new_status, note_id))
+                elif current_status == 'complete':
+                    # Complete -> Cancelled (clear completed_at)
+                    new_status = 'cancelled'
+                    conn.execute("UPDATE tasks SET status = ?, completed_at = NULL WHERE note_id = ?", (new_status, note_id))
+                else:  # cancelled or any other status
+                    # Cancelled -> Remove task (no task)
                     conn.execute("DELETE FROM tasks WHERE note_id = ?", (note_id,))
                     new_status = None
             else:
-                # No task -> Create new active task
+                # No task -> Create new active task with default priority 4
                 new_status = 'active'
-                conn.execute("INSERT INTO tasks (note_id, status) VALUES (?, ?)", (note_id, new_status))
+                conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, ?, ?)", (note_id, new_status, 4))
             
-            # Update the note's modified timestamp since metadata changed
-            conn.execute("UPDATE notes SET modified_at = CURRENT_TIMESTAMP WHERE id = ?", (note_id,))
+            # Note: We intentionally don't update note's modified_at for task status changes
+            # Task completions are tracked separately via completed_at and task status
             
             conn.commit()
             
@@ -373,8 +392,8 @@ class DatabaseManager:
             # Ensure task exists
             cursor = conn.execute("SELECT note_id FROM tasks WHERE note_id = ?", (note_id,))
             if not cursor.fetchone():
-                # Create task if it doesn't exist
-                conn.execute("INSERT INTO tasks (note_id, status) VALUES (?, 'active')", (note_id,))
+                # Create task if it doesn't exist with default priority 4
+                conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, 'active', ?)", (note_id, 4))
             
             # Update the date
             date_str = date_value.isoformat() if date_value else None

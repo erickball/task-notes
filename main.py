@@ -112,15 +112,28 @@ class EditableTreeItem(QTreeWidgetItem):
         content = self.note_data['content']
         display_text = content if content.strip() else "(empty note)"
         
-        # Add task indicator with consistent spacing
+        # Add task indicator with consistent spacing and formatting
         if self.note_data.get('task_status'):
             status = self.note_data['task_status']
             if status == 'complete':
                 display_text = f"☑ {display_text}"  # Using checkbox instead of checkmark
             elif status == 'active':
                 display_text = f"☐ {display_text}"  # Using empty checkbox
+            elif status == 'cancelled':
+                display_text = f"✗ {display_text}"  # Using X mark for cancelled
         
         self.setText(0, display_text)
+        
+        # Apply strikethrough formatting for cancelled tasks
+        if self.note_data.get('task_status') == 'cancelled':
+            font = self.font(0)
+            font.setStrikeOut(True)
+            self.setFont(0, font)
+        else:
+            # Reset font formatting for non-cancelled tasks
+            font = self.font(0)
+            font.setStrikeOut(False)
+            self.setFont(0, font)
 
 class NoteTreeWidget(QTreeWidget):
     def __init__(self, db_manager):
@@ -379,6 +392,11 @@ class NoteTreeWidget(QTreeWidget):
             self.setCurrentItem(new_item)
             new_item.setSelected(True)
             self.start_editing(new_item)
+            
+            # Refresh history panel to show this new note in timeline
+            main_window = self.window()
+            if hasattr(main_window, 'update_history_panel'):
+                main_window.update_history_panel()
     
     def create_sibling_note(self, sibling_item):
         """Create a new sibling note after the specified item"""
@@ -418,6 +436,11 @@ class NoteTreeWidget(QTreeWidget):
             self.setCurrentItem(new_item)
             new_item.setSelected(True)
             self.start_editing(new_item)
+            
+            # Refresh history panel to show this new note in timeline
+            main_window = self.window()
+            if hasattr(main_window, 'update_history_panel'):
+                main_window.update_history_panel()
             # Fallback: load children of non-existent root
             self.load_children(None, 1)
         
@@ -560,6 +583,8 @@ class NoteTreeWidget(QTreeWidget):
                 task_prefix = "☑ "
             elif status == 'active':
                 task_prefix = "☐ "
+            elif status == 'cancelled':
+                task_prefix = "✗ "
         
         self.edit_widget.setPlainText(f"{task_prefix}{content}")
         self.task_prefix_length = len(task_prefix)  # Store for later when saving
@@ -626,6 +651,8 @@ class NoteTreeWidget(QTreeWidget):
                 task_prefix = "☑ "
             elif status == 'active':
                 task_prefix = "☐ "
+            elif status == 'cancelled':
+                task_prefix = "✗ "
         
         self.edit_widget.setPlainText(f"{task_prefix}{content}")
         self.task_prefix_length = len(task_prefix)  # Store for later when saving
@@ -714,6 +741,8 @@ class NoteTreeWidget(QTreeWidget):
                 task_prefix = "☑ "
             elif status == 'active':
                 task_prefix = "☐ "
+            elif status == 'cancelled':
+                task_prefix = "✗ "
         
         self.edit_widget.setPlainText(f"{task_prefix}{content}")
         self.task_prefix_length = len(task_prefix)  # Store for later when saving
@@ -775,9 +804,23 @@ class NoteTreeWidget(QTreeWidget):
             # Save to database
             self.db.update_note(self.editing_item.note_id, new_content)
             
-            # Update item
-            self.editing_item.note_data['content'] = new_content
+            # Update item with fresh data from database (includes updated modified_at)
+            updated_note_data = self.db.get_note(self.editing_item.note_id)
+            if updated_note_data:
+                self.editing_item.note_data = updated_note_data
+            else:
+                # Fallback to just updating content if database query fails
+                self.editing_item.note_data['content'] = new_content
             self.editing_item.update_display()
+            
+            # Refresh details panel to show updated modified_at timestamp
+            main_window = self.window()
+            if hasattr(main_window, 'update_details_panel'):
+                main_window.update_details_panel()
+            
+            # Refresh history panel to show this modification in timeline
+            if hasattr(main_window, 'update_history_panel'):
+                main_window.update_history_panel()
             
         except Exception as e:
             print(f"Error finishing edit: {e}")
@@ -933,6 +976,11 @@ class NoteTreeWidget(QTreeWidget):
             self.setCurrentItem(new_item)
             new_item.setSelected(True)
             self.start_editing(new_item)  # Start editing the new note
+            
+            # Refresh history panel to show this new note in timeline
+            main_window = self.window()
+            if hasattr(main_window, 'update_history_panel'):
+                main_window.update_history_panel()
     
     def expand_item_by_id(self, note_id: int):
         """Find and expand an item by its note ID"""
@@ -1636,6 +1684,8 @@ class NoteTreeWidget(QTreeWidget):
                     task_prefix = "☑ "
                 elif new_status == 'active':
                     task_prefix = "☐ "
+                elif new_status == 'cancelled':
+                    task_prefix = "✗ "
                 # If new_status is None, task_prefix remains empty (no task)
                 
                 # Update the edit widget
@@ -1656,6 +1706,10 @@ class NoteTreeWidget(QTreeWidget):
         main_window = self.window()
         if hasattr(main_window, 'update_task_dashboard'):
             main_window.update_task_dashboard()
+        
+        # Refresh history panel to show task toggle activity
+        if hasattr(main_window, 'update_history_panel'):
+            main_window.update_history_panel()
     
     def cut_notes(self):
         """Cut selected notes to clipboard"""
@@ -1824,8 +1878,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Task Notes")
         self.setGeometry(100, 100, 1400, 900)
         
-        # Initialize database
-        self.db = DatabaseManager()
+        # Initialize database with last opened database path
+        last_db_path = self.load_last_database_path()
+        self.db = DatabaseManager(last_db_path)
         
         # Create main widget with splitter for resizable panes
         central_widget = QWidget()
@@ -1884,6 +1939,9 @@ class MainWindow(QMainWindow):
         
         # Create menu bar
         self.create_menus()
+        
+        # Create toolbar
+        self.create_toolbar()
         
         # Initial task dashboard update
         self.update_task_dashboard()
@@ -2083,8 +2141,15 @@ class MainWindow(QMainWindow):
             except:
                 time_part = "--:--"
             
-            # Create list item
-            activity_label = "📝" if note['activity_type'] == 'created' else "✏️"
+            # Create list item with appropriate activity label
+            if note['activity_type'] == 'created':
+                activity_label = "📝"
+            elif note['activity_type'] == 'completed':
+                activity_label = "✅"  # Special marker for task completions
+                content = "☑ " + content  # Add completed task indicator
+            else:  # modified
+                activity_label = "✏️"
+            
             item_text = f"{activity_label} {time_part} - {content}"
             
             item = QListWidgetItem(item_text)
@@ -2219,6 +2284,7 @@ class MainWindow(QMainWindow):
                 # Update window title and add to recent files
                 self.update_window_title()
                 self.add_to_recent_files(file_path)
+                self.save_last_database_path(file_path)
                 self.status_bar.showMessage(f"Created new database: {file_path}", 3000)
                 
             except Exception as e:
@@ -2251,6 +2317,7 @@ class MainWindow(QMainWindow):
                 import os
                 self.update_window_title()
                 self.add_to_recent_files(file_path)
+                self.save_last_database_path(file_path)
                 self.status_bar.showMessage(f"Opened database: {file_path}", 3000)
                 
             except Exception as e:
@@ -2290,6 +2357,7 @@ class MainWindow(QMainWindow):
                     # Update window title and add to recent files
                     self.update_window_title()
                     self.add_to_recent_files(file_path)
+                    self.save_last_database_path(file_path)
                     self.status_bar.showMessage(f"Database saved as: {file_path}", 3000)
                 else:
                     QMessageBox.warning(self, "Warning", "Database save may have failed")
@@ -2334,6 +2402,38 @@ class MainWindow(QMainWindow):
                 json.dump(settings, f)
         except Exception as e:
             print(f"Could not save recent files: {e}")
+    
+    def load_last_database_path(self):
+        """Load last opened database path from settings"""
+        try:
+            import json
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                return settings.get("last_database_path", "notes.db")
+        except Exception:
+            return "notes.db"
+    
+    def save_last_database_path(self, db_path):
+        """Save last opened database path to settings"""
+        try:
+            import json
+            
+            # Load existing settings
+            settings = {}
+            try:
+                with open("settings.json", "r") as f:
+                    settings = json.load(f)
+            except Exception:
+                pass
+            
+            # Update last database path
+            settings["last_database_path"] = db_path
+            
+            # Save settings
+            with open("settings.json", "w") as f:
+                json.dump(settings, f)
+        except Exception as e:
+            print(f"Could not save last database path: {e}")
     
     def add_to_recent_files(self, file_path):
         """Add a file to the recent files list"""
@@ -2407,6 +2507,7 @@ class MainWindow(QMainWindow):
             # Update window title and recent files
             self.update_window_title()
             self.add_to_recent_files(file_path)
+            self.save_last_database_path(file_path)
             self.status_bar.showMessage(f"Opened: {os.path.basename(file_path)}", 3000)
             
         except Exception as e:
@@ -2634,6 +2735,42 @@ class MainWindow(QMainWindow):
         self.default_font_size = self.tree_widget.font().pointSize()
         self.load_font_size()
     
+    def create_toolbar(self):
+        """Create the application toolbar with undo/redo buttons"""
+        toolbar = self.addToolBar("Main Toolbar")
+        toolbar.setObjectName("MainToolBar")
+        
+        # Undo button
+        if GIT_AVAILABLE and self.db.git_vc:
+            undo_action = QAction("↶ Undo", self)
+            undo_action.setShortcut("Ctrl+Z")
+            undo_action.setToolTip("Undo last change (Ctrl+Z)")
+            undo_action.triggered.connect(self.undo)
+            toolbar.addAction(undo_action)
+            
+            # Redo button
+            redo_action = QAction("↷ Redo", self)
+            redo_action.setShortcut("Ctrl+Y")
+            redo_action.setToolTip("Redo last undone change (Ctrl+Y)")
+            redo_action.triggered.connect(self.redo)
+            toolbar.addAction(redo_action)
+            
+            # Add separator
+            toolbar.addSeparator()
+        
+        # Add new note button
+        new_note_action = QAction("📝 New Note", self)
+        new_note_action.setShortcut("Ctrl+Return")
+        new_note_action.setToolTip("Create new note (Ctrl+Enter)")
+        new_note_action.triggered.connect(self.tree_widget.create_new_note)
+        toolbar.addAction(new_note_action)
+        
+        # Toggle task button
+        toggle_task_action = QAction("☐ Task", self)
+        toggle_task_action.setToolTip("Toggle task status")
+        toggle_task_action.triggered.connect(self.tree_widget.toggle_task)
+        toolbar.addAction(toggle_task_action)
+    
     def create_details_panel(self):
         """Create the note details panel"""
         widget = QWidget()
@@ -2715,6 +2852,15 @@ class MainWindow(QMainWindow):
         priority_layout.addWidget(self.detail_priority)
         priority_layout.addStretch()
         self.task_fields_layout.addLayout(priority_layout)
+        
+        # Completed at
+        completed_layout = QHBoxLayout()
+        completed_layout.addWidget(QLabel("Completed:"))
+        self.detail_completed_at = QLabel("-")
+        self.detail_completed_at.setStyleSheet("color: #666; font-style: italic;")
+        completed_layout.addWidget(self.detail_completed_at)
+        completed_layout.addStretch()
+        self.task_fields_layout.addLayout(completed_layout)
         
         layout.addWidget(self.task_fields_widget)
         self.task_fields_widget.hide()  # Hidden by default
@@ -2962,21 +3108,39 @@ class MainWindow(QMainWindow):
             # Update breadcrumb path
             self.detail_path_label.setText(self.get_breadcrumb_path(note_data))
             
-            # Format dates
+            # Format dates with proper timezone conversion
             created = note_data.get('created_at', '-')
             if created != '-':
                 try:
-                    created = created.replace('T', ' ').split('.')[0]
+                    dt = datetime.fromisoformat(created.replace('Z', '+00:00'))
+                    # If no timezone info, assume it's UTC and convert to local
+                    if dt.tzinfo is None:
+                        # Assume UTC for database timestamps
+                        from datetime import timezone
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    # Convert to local time
+                    local_dt = dt.astimezone()
+                    created = local_dt.strftime('%m/%d/%Y %I:%M %p')
                 except:
-                    pass
+                    # Fallback to simple format if parsing fails
+                    created = created.replace('T', ' ').split('.')[0]
             self.detail_created_label.setText(f"Created: {created}")
             
             modified = note_data.get('modified_at', '-')
             if modified != '-':
                 try:
-                    modified = modified.replace('T', ' ').split('.')[0]
+                    dt = datetime.fromisoformat(modified.replace('Z', '+00:00'))
+                    # If no timezone info, assume it's UTC and convert to local
+                    if dt.tzinfo is None:
+                        # Assume UTC for database timestamps
+                        from datetime import timezone
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    # Convert to local time
+                    local_dt = dt.astimezone()
+                    modified = local_dt.strftime('%m/%d/%Y %I:%M %p')
                 except:
-                    pass
+                    # Fallback to simple format if parsing fails
+                    modified = modified.replace('T', ' ').split('.')[0]
             self.detail_modified_label.setText(f"Modified: {modified}")
             
             # Handle task checkbox and fields
@@ -3027,6 +3191,24 @@ class MainWindow(QMainWindow):
                         self.detail_due_date.setText(due_date)
                 else:
                     self.detail_due_date.setText('')
+                
+                # Completed at
+                completed_at = note_data.get('completed_at')
+                if completed_at and task_status == 'complete':
+                    try:
+                        dt = datetime.fromisoformat(completed_at.replace('Z', '+00:00'))
+                        # If no timezone info, assume it's UTC and convert to local
+                        if dt.tzinfo is None:
+                            from datetime import timezone
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        # Convert to local time
+                        local_dt = dt.astimezone()
+                        self.detail_completed_at.setText(local_dt.strftime('%m/%d/%Y %I:%M %p'))
+                    except:
+                        # Fallback to simple format if parsing fails
+                        self.detail_completed_at.setText(completed_at.replace('T', ' ').split('.')[0])
+                else:
+                    self.detail_completed_at.setText('-')
                 
                 # Priority (block signals to prevent loops)
                 priority = note_data.get('priority', 0) or 0
@@ -3096,17 +3278,29 @@ class MainWindow(QMainWindow):
         try:
             # Toggle the task status by calling the tree widget's toggle_task method
             self.tree_widget.toggle_task()
-            
-            # Immediately update the details panel to show/hide task fields
-            self.update_details_panel()
         finally:
             self._updating_checkbox = False
+        
+        # Update the details panel AFTER clearing the flag to ensure checkbox state updates
+        self.update_details_panel()
     
     def update_task_dashboard(self):
         """Update the task dashboard with current task statistics"""
         if not hasattr(self, 'active_tasks_table'):
             return
-            
+        
+        # Prevent concurrent dashboard updates 
+        if getattr(self, '_updating_dashboard', False):
+            return
+        
+        self._updating_dashboard = True
+        try:
+            return self._do_update_task_dashboard()
+        finally:
+            self._updating_dashboard = False
+    
+    def _do_update_task_dashboard(self):
+        """Internal method that does the actual dashboard update"""
         import sqlite3
         from datetime import datetime, date
         
@@ -3153,28 +3347,60 @@ class MainWindow(QMainWindow):
             
             # Get active tasks with details
             query = f"""
-                SELECT n.content, t.start_date, t.due_date, t.priority, n.id
+                SELECT n.content, t.start_date, t.due_date, t.priority, t.completed_at, n.id
                 FROM notes n
                 JOIN tasks t ON n.id = t.note_id
                 WHERE t.status = 'active'
                 {subtree_where}
-                ORDER BY t.priority DESC, t.due_date ASC, n.content ASC
             """
             cursor = conn.execute(query, subtree_params)
+            raw_tasks = cursor.fetchall()
             
-            # Populate the table
-            tasks = cursor.fetchall()
+            # Debug: Check for duplicate IDs in raw data
+            task_ids = [task['id'] for task in raw_tasks]
+            unique_ids = set(task_ids)
+            if len(task_ids) != len(unique_ids):
+                print(f"DEBUG: Found duplicate task IDs in database query! Total: {len(task_ids)}, Unique: {len(unique_ids)}")
+                duplicate_ids = [id for id in task_ids if task_ids.count(id) > 1]
+                print(f"DEBUG: Duplicate IDs: {duplicate_ids}")
+            
+            # Categorize and sort tasks intelligently
+            tasks = self.categorize_and_sort_tasks(raw_tasks)
+            
+            # Debug: Check for duplicates after categorization
+            categorized_ids = [task['id'] for task in tasks]
+            unique_categorized = set(categorized_ids)
+            if len(categorized_ids) != len(unique_categorized):
+                print(f"DEBUG: Found duplicate task IDs after categorization! Total: {len(categorized_ids)}, Unique: {len(unique_categorized)}")
+                duplicate_categorized = [id for id in categorized_ids if categorized_ids.count(id) > 1]
+                print(f"DEBUG: Duplicate IDs after categorization: {duplicate_categorized}")
             
             # Block signals to prevent infinite loops during table updates
             self.active_tasks_table.blockSignals(True)
+            
+            # Explicitly clear the table first to prevent duplicates
+            self.active_tasks_table.clearContents()
+            self.active_tasks_table.setRowCount(0)
             self.active_tasks_table.setRowCount(len(tasks))
             
             for row_idx, task in enumerate(tasks):
-                # Task content (read-only)
+                # Task content with category label (read-only)
                 content = task['content'][:50] + "..." if len(task['content']) > 50 else task['content']
                 if not content.strip():
                     content = "(empty task)"
-                content_item = QTableWidgetItem(content)
+                
+                # Add category prefix
+                category = task.get('category', 'Misc')
+                if category == 'In Progress':
+                    content_with_category = f"⏳ {content}"
+                elif category == 'Upcoming':
+                    content_with_category = f"📅 {content}"
+                elif category == 'Future':
+                    content_with_category = f"🗓️ {content}"
+                else:  # Misc
+                    content_with_category = f"📝 {content}"
+                
+                content_item = QTableWidgetItem(content_with_category)
                 content_item.setFlags(content_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # Make read-only
                 content_item.setData(Qt.ItemDataRole.UserRole, task['id'])  # Store note ID
                 # Add visual indication that this is clickable
@@ -3219,11 +3445,17 @@ class MainWindow(QMainWindow):
             self.active_tasks_table.blockSignals(False)
     
     def on_task_table_item_clicked(self, item):
-        """Handle clicks on task table items - navigate to the note"""
+        """Handle clicks on task table items - navigate to the note only for task name column"""
         if not item:
             return
         
         try:
+            # Only navigate when clicking on the task name column (column 0)
+            # Allow editing for other columns (1: Start Date, 2: Due Date, 3: Priority)
+            column = item.column()
+            if column != 0:
+                return  # Don't navigate for editable columns
+            
             # Get the note ID from the first column of the same row
             row = item.row()
             first_column_item = self.active_tasks_table.item(row, 0)
@@ -3234,7 +3466,7 @@ class MainWindow(QMainWindow):
             if note_id is None:
                 return
             
-            # Navigate to the note (works for any column)
+            # Navigate to the note (only from task name column)
             self.find_and_select_note(note_id)
             
             # Give visual feedback - safely get task name
@@ -3417,6 +3649,7 @@ class MainWindow(QMainWindow):
                         # Reset to original value if parsing failed
                         self.status_bar.showMessage(f"Could not parse date: '{text}'", 3000)
                         self.update_task_dashboard()  # Refresh to reset value
+                        self._dashboard_refreshed = True  # Prevent duplicate timer-based refresh
                         return
                 
                 # Update in database
@@ -3433,6 +3666,7 @@ class MainWindow(QMainWindow):
                         # Reset to original value if parsing failed
                         self.status_bar.showMessage(f"Could not parse date: '{text}'", 3000)
                         self.update_task_dashboard()  # Refresh to reset value
+                        self._dashboard_refreshed = True  # Prevent duplicate timer-based refresh
                         return
                 
                 # Update in database
@@ -3460,24 +3694,105 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     self.status_bar.showMessage("Priority must be a number 0-10", 3000)
                     self.update_task_dashboard()  # Refresh to reset value
+                    self._dashboard_refreshed = True  # Prevent duplicate timer-based refresh
                     return
             
             # Update details panel if this task is currently selected
             if hasattr(self, 'current_task_id') and self.current_task_id == note_id:
                 self.update_details_panel()
             
-            # Refresh dashboard to show updated values
-            QTimer.singleShot(100, self.refresh_dashboard_after_edit)
+            # Refresh dashboard to show updated values (if not already refreshed)
+            if not getattr(self, '_dashboard_refreshed', False):
+                QTimer.singleShot(100, self.refresh_dashboard_after_edit)
+            else:
+                self._dashboard_refreshed = False  # Reset flag for next time
             
         except Exception as e:
             self.status_bar.showMessage(f"Error updating task: {str(e)}", 3000)
             self.update_task_dashboard()  # Refresh to reset value
+            self._dashboard_refreshed = True  # Prevent duplicate timer-based refresh
     
     def refresh_dashboard_after_edit(self):
         """Refresh dashboard with signal blocking to prevent loops"""
         self.active_tasks_table.blockSignals(True)
         self.update_task_dashboard()
         self.active_tasks_table.blockSignals(False)
+    
+    def categorize_and_sort_tasks(self, raw_tasks):
+        """Categorize tasks and apply smart sorting"""
+        from datetime import datetime, timedelta
+        
+        now = datetime.now()
+        week_from_now = now + timedelta(days=7)
+        
+        # Categorize tasks
+        in_progress = []
+        upcoming = []
+        misc = []
+        
+        for task in raw_tasks:
+            start_date = task['start_date']
+            
+            if start_date:
+                try:
+                    start_dt = datetime.fromisoformat(start_date)
+                    if start_dt <= now:
+                        # Task is in progress (start date has passed)
+                        task_dict = dict(task)
+                        task_dict['category'] = 'In Progress'
+                        in_progress.append(task_dict)
+                    elif start_dt <= week_from_now:
+                        # Task is upcoming (starts within a week)
+                        task_dict = dict(task)
+                        task_dict['category'] = 'Upcoming'
+                        upcoming.append(task_dict)
+                    else:
+                        # Task starts more than a week away
+                        task_dict = dict(task)
+                        task_dict['category'] = 'Future'
+                        misc.append(task_dict)
+                except:
+                    # Invalid date format, treat as misc
+                    task_dict = dict(task)
+                    task_dict['category'] = 'Misc'
+                    misc.append(task_dict)
+            else:
+                # No start date
+                task_dict = dict(task)
+                task_dict['category'] = 'Misc'
+                misc.append(task_dict)
+        
+        # Smart sorting function
+        def smart_sort_key(task):
+            priority = task['priority'] or 0
+            due_date = task['due_date']
+            content = task['content']
+            
+            # Priority 0 (None) should be at the top, then descending priority
+            priority_sort = (0 if priority == 0 else 1, -priority if priority != 0 else 0)
+            
+            # Due date sorting (None dates go to end)
+            if due_date:
+                try:
+                    due_dt = datetime.fromisoformat(due_date)
+                    due_sort = (0, due_dt)
+                except:
+                    due_sort = (1, datetime.max)
+            else:
+                due_sort = (1, datetime.max)
+            
+            # Content for tie-breaking
+            content_sort = content.lower()
+            
+            return (priority_sort, due_sort, content_sort)
+        
+        # Sort each category
+        in_progress.sort(key=smart_sort_key)
+        upcoming.sort(key=smart_sort_key)
+        misc.sort(key=smart_sort_key)
+        
+        # Combine categories in order: in progress, upcoming, misc
+        return in_progress + upcoming + misc
     
     def increase_font_size(self):
         """Increase font size by 1 point"""
