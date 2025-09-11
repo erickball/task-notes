@@ -529,6 +529,8 @@ class GitVersionControl:
         try:
             # Try to open existing repo
             self.repo = pygit2.Repository(self.repo_path)
+            # Rebuild undo stack from existing git history
+            self._rebuild_undo_stack_from_history()
         except pygit2.GitError:
             # Create new repo
             self.repo = pygit2.init_repository(self.repo_path)
@@ -706,3 +708,41 @@ class GitVersionControl:
             
             # Give Windows a moment to release file handles
             time.sleep(0.1)
+    
+    def _rebuild_undo_stack_from_history(self):
+        """Rebuild the undo stack from git commit history"""
+        try:
+            if not self.repo:
+                return
+            
+            # Get the current HEAD commit
+            try:
+                current_head = self.repo.head.target
+            except pygit2.GitError:
+                # No HEAD (empty repo), nothing to rebuild
+                return
+            
+            # Walk through the commit history to build undo stack
+            commits = []
+            for commit in self.repo.walk(current_head, pygit2.GIT_SORT_TIME):
+                commits.append(str(commit.id))
+                # Limit to last 50 commits to avoid excessive memory usage
+                if len(commits) >= 50:
+                    break
+            
+            # The undo stack should contain all commits except the current HEAD
+            # (because HEAD is what we're currently at, so undoing goes to the previous commit)
+            if len(commits) > 1:
+                self.undo_stack = commits[1:]  # Skip current HEAD, keep the rest
+                print(f"Rebuilt undo stack with {len(self.undo_stack)} commits")
+            else:
+                self.undo_stack = []
+                print("No previous commits to undo to")
+            
+            # Clear redo stack when rebuilding from history
+            self.redo_stack = []
+            
+        except Exception as e:
+            print(f"Failed to rebuild undo stack from history: {e}")
+            self.undo_stack = []
+            self.redo_stack = []
