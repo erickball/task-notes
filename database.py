@@ -17,7 +17,7 @@ class DatabaseManager:
         if GIT_AVAILABLE:
             import os
             db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
-            self.git_vc = GitVersionControl(db_dir)
+            self.git_vc = GitVersionControl(db_dir, self)
         else:
             self.git_vc = None
         self.init_database()
@@ -35,7 +35,7 @@ class DatabaseManager:
         if GIT_AVAILABLE:
             import os
             db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
-            self.git_vc = GitVersionControl(db_dir)
+            self.git_vc = GitVersionControl(db_dir, self)
     
     def save_database_as(self, new_db_path: str):
         """Save current database to a new file"""
@@ -56,7 +56,7 @@ class DatabaseManager:
         if GIT_AVAILABLE:
             import os
             db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
-            self.git_vc = GitVersionControl(db_dir)
+            self.git_vc = GitVersionControl(db_dir, self)
             self.git_vc.commit_changes(f"Saved from {old_path}")
         
         return True
@@ -515,11 +515,12 @@ class DatabaseManager:
 class GitVersionControl:
     """Git-based version control for notes database"""
     
-    def __init__(self, repo_path: str = "."):
+    def __init__(self, repo_path: str = ".", db_manager=None):
         self.repo_path = repo_path
         self.repo = None
         self.undo_stack = []  # Stack of commit IDs we can undo to
         self.redo_stack = []  # Stack of commit IDs we can redo to
+        self.db_manager = db_manager  # Reference to database manager for proper cleanup
         if GIT_AVAILABLE:
             self.init_repo()
     
@@ -593,6 +594,9 @@ class GitVersionControl:
             return False
             
         try:
+            # Ensure database connections are closed before git reset
+            self._close_database_connections()
+            
             # Get current HEAD to put on redo stack
             current_head = str(self.repo.head.target)
             
@@ -618,6 +622,9 @@ class GitVersionControl:
             return False
             
         try:
+            # Ensure database connections are closed before git reset
+            self._close_database_connections()
+            
             # Get current HEAD to put back on undo stack
             current_head = str(self.repo.head.target)
             
@@ -657,3 +664,45 @@ class GitVersionControl:
         except Exception as e:
             print(f"Failed to get git history: {e}")
             return []
+    
+    def _close_database_connections(self):
+        """Close all database connections and remove WAL files on Windows"""
+        import os
+        import time
+        
+        # Force garbage collection to close any lingering connections
+        import gc
+        gc.collect()
+        
+        # Try to force close any open database connections
+        if self.db_manager:
+            # Force a checkpoint to write WAL to main database
+            try:
+                import sqlite3
+                with sqlite3.connect(self.db_manager.db_path) as conn:
+                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    conn.commit()
+                print("Forced WAL checkpoint to main database")
+            except Exception as e:
+                print(f"Could not force WAL checkpoint: {e}")
+        
+        # Force garbage collection again
+        gc.collect()
+        
+        # On Windows, also try to remove WAL files that might lock the database
+        if os.name == 'nt':  # Windows
+            db_file = self.db_manager.db_path if self.db_manager else "notes.db"
+            wal_file = db_file + "-wal"
+            shm_file = db_file + "-shm"
+            
+            # Try to remove WAL files if they exist
+            for file_path in [wal_file, shm_file]:
+                if os.path.exists(file_path):
+                    try:
+                        os.remove(file_path)
+                        print(f"Removed SQLite WAL file: {file_path}")
+                    except OSError as e:
+                        print(f"Could not remove WAL file {file_path}: {e}")
+            
+            # Give Windows a moment to release file handles
+            time.sleep(0.1)

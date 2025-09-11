@@ -421,9 +421,16 @@ class NoteTreeWidget(QTreeWidget):
             else:
                 insert_position = parent_item.indexOfChild(sibling_item) + 1  # fallback
         else:
-            # Handle case where sibling is at root level in focused view
+            # Handle case where sibling_item is the root node (ID 1)
+            if sibling_item.note_id == 1:
+                # Cannot create sibling of root - create child instead
+                print("Cannot create sibling of root node - creating child instead")
+                self.create_child_note(sibling_item)
+                return
+            
+            # Handle case where sibling is at top level in focused view
             if self.focused_root_id == 1:
-                # True root - sibling is actually a child of root
+                # True root view - sibling becomes child of root
                 parent_id = 1
                 sibling_note_data = self.db.get_note(sibling_item.note_id)
                 if sibling_note_data:
