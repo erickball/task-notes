@@ -380,25 +380,31 @@ class NoteTreeWidget(QTreeWidget):
         new_id = self.db.create_note(parent_item.note_id, "", 0)  # Insert at position 0
         print(f"Created child note with ID {new_id}")
         
-        # Add to tree
-        new_note_data = self.db.get_note(new_id)
-        if new_note_data:
-            new_item = EditableTreeItem(parent_item, new_note_data)
-            parent_item.insertChild(0, new_item)
-            # Expand parent to show new child
-            parent_item.setExpanded(True)
-            self.db.save_expansion_state(parent_item.note_id, True)
-            
-            # Clear selection and select only the new item
+        # Refresh parent to reload children in correct database order
+        # Store expansion state
+        was_expanded = parent_item.isExpanded()
+        
+        # Refresh the parent's children
+        print(f"Refreshing parent {parent_item.note_id} to reload children in database order")
+        self.refresh_parent_children(parent_item, parent_item.note_id)
+        
+        # Expand parent to show new child
+        parent_item.setExpanded(True)
+        self.db.save_expansion_state(parent_item.note_id, True)
+        
+        # Find and select the new note (should be at position 0)
+        new_item = self.find_child_by_id(parent_item, new_id)
+        if new_item:
             self.clearSelection()
             self.setCurrentItem(new_item)
             new_item.setSelected(True)
             self.start_editing(new_item)
-            
-            # Refresh history panel to show this new note in timeline
-            main_window = self.window()
-            if hasattr(main_window, 'update_history_panel'):
-                main_window.update_history_panel()
+            print(f"Found new child at tree index {parent_item.indexOfChild(new_item)} (should be 0)")
+        
+        # Refresh history panel to show this new note in timeline
+        main_window = self.window()
+        if hasattr(main_window, 'update_history_panel'):
+            main_window.update_history_panel()
     
     def create_sibling_note(self, sibling_item):
         """Create a new sibling note after the specified item"""
@@ -408,38 +414,70 @@ class NoteTreeWidget(QTreeWidget):
         parent_item = sibling_item.parent()
         if parent_item and isinstance(parent_item, EditableTreeItem):
             parent_id = parent_item.note_id
-            insert_position = parent_item.indexOfChild(sibling_item) + 1
+            # Use database position, not tree widget index
+            sibling_note_data = self.db.get_note(sibling_item.note_id)
+            if sibling_note_data:
+                insert_position = sibling_note_data['position'] + 1
+            else:
+                insert_position = parent_item.indexOfChild(sibling_item) + 1  # fallback
         else:
             # Handle case where sibling is at root level in focused view
             if self.focused_root_id == 1:
                 # True root - sibling is actually a child of root
                 parent_id = 1
-                insert_position = self.indexOfTopLevelItem(sibling_item) + 1
+                sibling_note_data = self.db.get_note(sibling_item.note_id)
+                if sibling_note_data:
+                    insert_position = sibling_note_data['position'] + 1
+                else:
+                    insert_position = self.indexOfTopLevelItem(sibling_item) + 1  # fallback
             else:
                 # Focused subtree - sibling is child of focused root
                 parent_id = self.focused_root_id
-                insert_position = self.indexOfTopLevelItem(sibling_item) + 1
+                sibling_note_data = self.db.get_note(sibling_item.note_id)
+                if sibling_note_data:
+                    insert_position = sibling_note_data['position'] + 1
+                else:
+                    insert_position = self.indexOfTopLevelItem(sibling_item) + 1  # fallback
         
         # Create in database
         print(f"Creating sibling note at position {insert_position} under parent {parent_id}")
         new_id = self.db.create_note(parent_id, "", insert_position)
         print(f"Created sibling note with ID {new_id}")
         
-        # Add to tree
-        new_note_data = self.db.get_note(new_id)
-        if new_note_data:
-            if parent_item:
-                new_item = EditableTreeItem(parent_item, new_note_data)
-                parent_item.insertChild(insert_position, new_item)
-            else:
-                new_item = EditableTreeItem(self, new_note_data)
-                self.insertTopLevelItem(insert_position, new_item)
+        # Refresh parent to reload children in correct database order
+        if parent_item:
+            parent_id = parent_item.note_id
+            # Store expansion state
+            was_expanded = parent_item.isExpanded()
             
-            # Clear selection and select only the new item
-            self.clearSelection()
-            self.setCurrentItem(new_item)
-            new_item.setSelected(True)
-            self.start_editing(new_item)
+            # Refresh the parent's children
+            print(f"Refreshing parent {parent_id} to reload children in database order")
+            self.refresh_parent_children(parent_item, parent_id)
+            
+            # Restore expansion state
+            if was_expanded:
+                parent_item.setExpanded(True)
+            
+            # Find and select the new note
+            new_item = self.find_child_by_id(parent_item, new_id)
+            if new_item:
+                self.clearSelection()
+                self.setCurrentItem(new_item)
+                new_item.setSelected(True)
+                self.start_editing(new_item)
+                print(f"Found new sibling at tree index {parent_item.indexOfChild(new_item)}")
+        else:
+            # Handle top-level items (reload entire tree for simplicity)
+            self.load_tree()
+            # Find and select the new note
+            for i in range(self.topLevelItemCount()):
+                item = self.topLevelItem(i)
+                if isinstance(item, EditableTreeItem) and item.note_id == new_id:
+                    self.clearSelection()
+                    self.setCurrentItem(item)
+                    item.setSelected(True)
+                    self.start_editing(item)
+                    break
             
             # Refresh history panel to show this new note in timeline
             main_window = self.window()
@@ -447,6 +485,36 @@ class NoteTreeWidget(QTreeWidget):
                 main_window.update_history_panel()
             # Fallback: load children of non-existent root
             self.load_children(None, 1)
+    
+    def refresh_parent_children(self, parent_item, parent_id):
+        """Refresh a parent's children by reloading from database in correct order"""
+        # Store child expansion states before reload
+        child_expansion_states = {}
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            if isinstance(child, EditableTreeItem):
+                child_expansion_states[child.note_id] = child.isExpanded()
+        
+        # Remove all children
+        while parent_item.childCount() > 0:
+            parent_item.removeChild(parent_item.child(0))
+        
+        # Reload children from database in correct order
+        self.load_children(parent_item, parent_id)
+        
+        # Restore expansion states
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            if isinstance(child, EditableTreeItem) and child.note_id in child_expansion_states:
+                child.setExpanded(child_expansion_states[child.note_id])
+    
+    def find_child_by_id(self, parent_item, note_id):
+        """Find a direct child of parent_item with the given note_id"""
+        for i in range(parent_item.childCount()):
+            child = parent_item.child(i)
+            if isinstance(child, EditableTreeItem) and child.note_id == note_id:
+                return child
+        return None
         
     def load_children(self, parent_item, parent_id, current_depth=0):
         """Load children for a given parent with depth limiting for performance"""
@@ -3085,6 +3153,13 @@ class MainWindow(QMainWindow):
         self.subtree_tasks_only.stateChanged.connect(self.update_task_dashboard)
         title_layout.addWidget(self.subtree_tasks_only)
         
+        # Add smart sort button next to checkbox
+        smart_sort_button = QPushButton("🔄 Smart Sort")
+        smart_sort_button.setToolTip("Return to intelligent categorized sorting")
+        smart_sort_button.setMaximumWidth(120)
+        smart_sort_button.clicked.connect(self.restore_smart_sort)
+        title_layout.addWidget(smart_sort_button)
+        
         layout.addLayout(title_layout)
         
         layout.addWidget(QLabel(""))  # Spacer
@@ -3106,21 +3181,6 @@ class MainWindow(QMainWindow):
         header.resizeSection(1, 100)  # Start Date
         header.resizeSection(2, 100)  # Due Date
         header.resizeSection(3, 80)   # Priority
-        
-        # Add smart sort button
-        smart_sort_button = QPushButton("🔄 Smart Sort")
-        smart_sort_button.setToolTip("Return to intelligent categorized sorting")
-        smart_sort_button.setMaximumWidth(120)
-        smart_sort_button.clicked.connect(self.restore_smart_sort)
-        
-        # Create horizontal layout for button to prevent stretching
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(smart_sort_button)
-        button_layout.addStretch()  # Push button to left
-        
-        button_widget = QWidget()
-        button_widget.setLayout(button_layout)
-        layout.addWidget(button_widget)
         
         layout.addWidget(self.active_tasks_table)
         
@@ -3427,7 +3487,7 @@ class MainWindow(QMainWindow):
             
             # Count children
             children = self.db.get_children(note_data['id'])
-            self.detail_children_label.setText(f"Children: {len(children)}")
+            self.detail_children_label.setText(f"Children: {len(children)} | ID: {note_data['id']}")
             
         elif len(selected_items) > 1:
             # Multiple selection
