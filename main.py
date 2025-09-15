@@ -1962,9 +1962,10 @@ class NoteTreeWidget(QTreeWidget):
                     
                     # Save the image
                     if image.save(image_path, "PNG"):
-                        # Insert the image path at cursor position
+                        # Insert the image path at cursor position, quote if it contains spaces
                         cursor = self.edit_widget.textCursor()
-                        cursor.insertText(f"{image_path}")
+                        display_path = f'"{image_path}"' if ' ' in image_path else image_path
+                        cursor.insertText(display_path)
                         return True
                     else:
                         print(f"Failed to save image to {image_path}")
@@ -3771,12 +3772,14 @@ class MainWindow(QMainWindow):
         # Image file extensions to detect
         image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.ico'}
         
-        # Pattern to match file paths that could be images
-        # Matches: /path/to/file.jpg, ./file.png, C:\path\file.jpg, ~/file.png, etc.
-        file_path_pattern = r'(?:^|\s)([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))(?=\s|$)'
+        # Pattern to match file paths that could be images (including paths with spaces)
+        # Matches: /path/to/file.jpg, ./file.png, C:\path\file.jpg, ~/file.png, "/path with spaces/file.jpg", etc.
+        # First try quoted paths, then unquoted paths without spaces
+        file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
         
         def replace_image_path(match):
-            file_path = match.group(1)
+            # Get the file path from either the quoted group (1) or unquoted group (2)
+            file_path = match.group(1) if match.group(1) else match.group(2)
             
             # Check if the file exists and is an image
             if os.path.isfile(file_path):
