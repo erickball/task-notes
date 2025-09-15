@@ -2316,6 +2316,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Task Notes")
         self.setGeometry(100, 100, 1400, 900)
         
+        # Set window icon
+        import os
+        icon_path = os.path.join(os.path.dirname(__file__), "robot-brain.ico")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+        
         # Initialize database with last opened database path
         last_db_path = self.load_last_database_path()
         self.db = DatabaseManager(last_db_path)
