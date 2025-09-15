@@ -4767,21 +4767,23 @@ class MainWindow(QMainWindow):
         info_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
         layout.addWidget(info_label)
         
-        # Create tree visualization
-        from PyQt6.QtWidgets import QTextEdit
-        tree_display = QTextEdit()
-        tree_display.setReadOnly(True)
+        # Create tree visualization with clickable items
+        from PyQt6.QtWidgets import QListWidget
+        tree_display = QListWidget()
         tree_display.setFont(QFont("Consolas", 10))  # Monospace font for alignment
+        tree_display.setAlternatingRowColors(True)
         
-        # Build the tree display text
-        tree_text = self.build_commit_tree_display(commit_tree)
-        tree_display.setPlainText(tree_text)
+        # Build the tree display and populate list
+        self.populate_commit_tree_list(tree_display, commit_tree)
+        
+        # Connect double-click handler
+        tree_display.itemDoubleClicked.connect(lambda item: self.handle_version_history_double_click(item, dialog))
         
         layout.addWidget(tree_display)
         
         # Add legend
         legend_layout = QHBoxLayout()
-        legend = QLabel("Legend: ● HEAD  ◦ Commit  │ Linear history  ├─ Branch point  ┤ Merge  └─ ┌─ Branch connections")
+        legend = QLabel("Legend: ● HEAD  ◦ Commit  │ Linear history  ├─ Branch point  ┤ Merge  └─ ┌─ Branch connections  •  Double-click to restore state")
         legend.setStyleSheet("font-size: 10px; color: #666;")
         legend_layout.addWidget(legend)
         legend_layout.addStretch()
@@ -4959,8 +4961,242 @@ class MainWindow(QMainWindow):
     def refresh_history_dialog(self, dialog, tree_display):
         """Refresh the history dialog with updated commit tree"""
         commit_tree = self.db.git_vc.get_commit_tree(50)
-        tree_text = self.build_commit_tree_display(commit_tree)
-        tree_display.setPlainText(tree_text)
+        self.populate_commit_tree_list(tree_display, commit_tree)
+    
+    def populate_commit_tree_list(self, list_widget, commit_tree):
+        """Populate the list widget with commit tree data"""
+        list_widget.clear()
+        
+        if not commit_tree:
+            item = QListWidgetItem("No commits found.")
+            list_widget.addItem(item)
+            return
+        
+        # Build commit mapping and sort by date (newest first)
+        commit_map = {c['id']: c for c in commit_tree}
+        sorted_commits = sorted(commit_tree, key=lambda c: c['date'], reverse=True)
+        
+        # Track column assignments for each commit
+        commit_columns = {}
+        next_column = 0
+        
+        # Find HEAD commit to start with column 0
+        head_commit = None
+        for commit in sorted_commits:
+            if commit['is_head']:
+                head_commit = commit
+                break
+        
+        if head_commit:
+            commit_columns[head_commit['id']] = 0
+            next_column = 1
+        
+        # Process commits in chronological order
+        for commit in sorted_commits:
+            commit_id = commit['id']
+            
+            # Assign column if not already assigned
+            if commit_id not in commit_columns:
+                commit_columns[commit_id] = next_column
+                next_column += 1
+            
+            current_column = commit_columns[commit_id]
+            
+            # Assign columns to parents (they come after this commit chronologically)
+            parents = commit['parents']
+            if parents:
+                # First parent stays in same column (linear history)
+                if parents[0] in commit_map and parents[0] not in commit_columns:
+                    commit_columns[parents[0]] = current_column
+                
+                # Additional parents get new columns (merges)
+                for parent_id in parents[1:]:
+                    if parent_id in commit_map and parent_id not in commit_columns:
+                        commit_columns[parent_id] = next_column
+                        next_column += 1
+            
+            # Assign columns to additional children (branches)
+            children = commit['children']
+            if len(children) > 1:
+                # First child already handled by parent assignment
+                # Additional children get new columns
+                for child_id in children[1:]:
+                    if child_id in commit_map and child_id not in commit_columns:
+                        commit_columns[child_id] = next_column
+                        next_column += 1
+        
+        # Build the display
+        max_column = max(commit_columns.values()) if commit_columns else 0
+        
+        for i, commit in enumerate(sorted_commits):
+            commit_id = commit['id']
+            column = commit_columns.get(commit_id, 0)
+            
+            # Build the line with proper column positioning
+            line_parts = []
+            
+            # Add columns before current commit
+            for col in range(column):
+                # Check if there's a commit in this column that continues
+                has_continuation = any(commit_columns.get(c['id'], -1) == col 
+                                    for c in sorted_commits[i+1:] if c['id'] in commit_map)
+                line_parts.append("│ " if has_continuation else "  ")
+            
+            # Choose symbol based on commit type
+            if commit['is_head']:
+                symbol = "●"  # Solid circle for HEAD
+            elif commit['has_multiple_children'] or commit['has_multiple_parents']:
+                symbol = "◦"  # Open circle for branch/merge points
+            else:
+                symbol = "◦"  # Regular commit
+            
+            # Format commit info
+            date_str = commit['date'].strftime('%m-%d %H:%M')
+            message = commit['message'][:60] + "..." if len(commit['message']) > 60 else commit['message']
+            
+            # Add indicators
+            indicators = []
+            if commit['is_head']:
+                indicators.append("HEAD")
+            if commit['has_multiple_children']:
+                indicators.append("BRANCH")
+            if commit['has_multiple_parents']:
+                indicators.append("MERGE")
+            
+            indicator_text = f" [{', '.join(indicators)}]" if indicators else ""
+            
+            # Build the main commit line
+            commit_line = f"{symbol} {date_str} {message}{indicator_text}"
+            display_text = "".join(line_parts) + commit_line
+            
+            # Create list item with commit data
+            item = QListWidgetItem(display_text)
+            item.setData(Qt.ItemDataRole.UserRole, commit_id)  # Store commit ID
+            list_widget.addItem(item)
+            
+            # Add connection lines for branches/merges (simplified for list view)
+            if len(commit['children']) > 1 or len(commit['parents']) > 1:
+                connection_line = []
+                
+                for col in range(max_column + 1):
+                    if col == column:
+                        # Current commit column
+                        if len(commit['children']) > 1:
+                            connection_line.append("├─")
+                        elif len(commit['parents']) > 1:
+                            connection_line.append("┤ ")
+                        else:
+                            connection_line.append("│ ")
+                    elif col in [commit_columns.get(child_id, -1) for child_id in commit['children'][1:]]:
+                        connection_line.append("└─")
+                    elif col in [commit_columns.get(parent_id, -1) for parent_id in commit['parents'][1:]]:
+                        connection_line.append("┌─")
+                    else:
+                        # Check if this column continues
+                        has_continuation = any(commit_columns.get(c['id'], -1) == col 
+                                            for c in sorted_commits[i+1:] if c['id'] in commit_map)
+                        connection_line.append("│ " if has_continuation else "  ")
+                
+                if any(part not in ["  ", "│ "] for part in connection_line):
+                    connection_item = QListWidgetItem("".join(connection_line))
+                    connection_item.setData(Qt.ItemDataRole.UserRole, None)  # No commit ID for connection lines
+                    list_widget.addItem(connection_item)
+    
+    def handle_version_history_double_click(self, item, dialog):
+        """Handle double-click on version history item"""
+        commit_id = item.data(Qt.ItemDataRole.UserRole)
+        if not commit_id:  # Connection line or non-commit item
+            return
+        
+        # Get commit info for confirmation
+        commit_tree = self.db.git_vc.get_commit_tree(200)  # Get more commits to find the one
+        target_commit = None
+        for commit in commit_tree:
+            if commit['id'] == commit_id:
+                target_commit = commit
+                break
+        
+        if not target_commit:
+            QMessageBox.warning(self, "Error", "Could not find the selected commit.")
+            return
+        
+        # Show confirmation dialog
+        date_str = target_commit['date'].strftime('%Y-%m-%d %H:%M:%S')
+        message = target_commit['message'][:100] + "..." if len(target_commit['message']) > 100 else target_commit['message']
+        
+        confirmation = QMessageBox.question(
+            self,
+            "Restore Database State",
+            f"Are you sure you want to restore the database to this commit?\n\n"
+            f"Date: {date_str}\n"
+            f"Message: {message}\n"
+            f"Commit: {commit_id[:12]}...\n\n"
+            f"This will create a branch to preserve the current state and then reset to the selected commit.\n"
+            f"All current unsaved changes will be lost.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if confirmation == QMessageBox.StandardButton.Yes:
+            self.restore_to_commit(commit_id, dialog)
+    
+    def restore_to_commit(self, commit_id, history_dialog):
+        """Restore database to a specific commit"""
+        try:
+            # Close any editing in progress
+            if self.tree_widget.editing_item:
+                self.tree_widget.finish_editing()
+            
+            # Close database connections before git operations
+            self.db.git_vc._close_database_connections()
+            
+            # Get the commit object
+            commit = self.db.git_vc.repo[commit_id]
+            
+            # Create preservation branch for current state
+            import time
+            current_head = self.db.git_vc.repo.head.target
+            branch_name = f"before-restore-{int(time.time())}"
+            
+            try:
+                current_commit = self.db.git_vc.repo[current_head]
+                preservation_branch = self.db.git_vc.repo.branches.local.create(branch_name, current_commit)
+                print(f"Created preservation branch '{branch_name}' at {current_head}")
+            except Exception as e:
+                print(f"Could not create preservation branch: {e}")
+            
+            # Reset to the target commit
+            import pygit2
+            self.db.git_vc.repo.reset(commit.id, pygit2.GIT_RESET_HARD)
+            
+            # Reload the UI to reflect the restored state
+            self.tree_widget.load_tree()
+            
+            # Update status
+            self.status_bar.showMessage(f"Restored database to commit {commit_id[:12]}...", 5000)
+            
+            # Refresh the history dialog
+            if history_dialog and hasattr(history_dialog, 'findChild'):
+                tree_display = history_dialog.findChild(QListWidget)
+                if tree_display:
+                    self.refresh_history_dialog(history_dialog, tree_display)
+            
+            QMessageBox.information(
+                self,
+                "Database Restored",
+                f"Successfully restored database to commit {commit_id[:12]}...\n\n"
+                f"Previous state saved as branch '{branch_name}'"
+            )
+            
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Restore Failed",
+                f"Failed to restore database to commit {commit_id[:12]}...:\n\n{str(e)}"
+            )
+            print(f"Restore failed: {e}")
+            import traceback
+            traceback.print_exc()
     
     def show_search_dialog(self):
         """Show search dialog to find notes"""
