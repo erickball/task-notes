@@ -639,15 +639,27 @@ class GitVersionControl:
                     print(f"Branch points to commit: {new_branch.target}")
                     
                 # List all branches after creation
-                print(f"All local branches after creation: {list(self.repo.branches.local.keys())}")
+                print(f"All local branches after creation: {list(self.repo.branches.local)}")
                     
             except Exception as e:
                 print(f"Could not create preservation branch: {e}")
                 import traceback
                 traceback.print_exc()
             
-            # Reset to the undo commit
-            self.repo.reset(undo_commit.id, pygit2.GIT_RESET_HARD)
+            # Reset to the undo commit with retry logic
+            import time
+            for attempt in range(3):
+                try:
+                    self.repo.reset(undo_commit.id, pygit2.GIT_RESET_HARD)
+                    break
+                except Exception as reset_error:
+                    print(f"Reset attempt {attempt + 1} failed: {reset_error}")
+                    if attempt < 2:  # Not the last attempt
+                        print("Retrying with additional cleanup...")
+                        self._close_database_connections()
+                        time.sleep(0.5)
+                    else:
+                        raise reset_error
             
             # Add current HEAD to redo stack
             self.redo_stack.append(current_head_str)
@@ -674,8 +686,20 @@ class GitVersionControl:
             redo_to_commit_id = self.redo_stack.pop()
             redo_commit = self.repo[redo_to_commit_id]
             
-            # Reset to the redo commit
-            self.repo.reset(redo_commit.id, pygit2.GIT_RESET_HARD)
+            # Reset to the redo commit with retry logic
+            import time
+            for attempt in range(3):
+                try:
+                    self.repo.reset(redo_commit.id, pygit2.GIT_RESET_HARD)
+                    break
+                except Exception as reset_error:
+                    print(f"Redo reset attempt {attempt + 1} failed: {reset_error}")
+                    if attempt < 2:  # Not the last attempt
+                        print("Retrying with additional cleanup...")
+                        self._close_database_connections()
+                        time.sleep(0.5)
+                    else:
+                        raise reset_error
             
             # Add current HEAD back to undo stack
             self.undo_stack.append(current_head)
@@ -840,9 +864,10 @@ class GitVersionControl:
             # Force a checkpoint to write WAL to main database
             try:
                 import sqlite3
-                with sqlite3.connect(self.db_manager.db_path) as conn:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    conn.commit()
+                conn = sqlite3.connect(self.db_manager.db_path)
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.commit()
+                conn.close()
                 print("Forced WAL checkpoint to main database")
             except Exception as e:
                 print(f"Could not force WAL checkpoint: {e}")
@@ -866,7 +891,21 @@ class GitVersionControl:
                         print(f"Could not remove WAL file {file_path}: {e}")
             
             # Give Windows a moment to release file handles
-            time.sleep(0.1)
+            time.sleep(0.2)
+        
+        # Additional step: Try to switch to DELETE mode to avoid WAL
+        if self.db_manager:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.db_manager.db_path)
+                conn.execute("PRAGMA journal_mode=DELETE")
+                conn.close()
+                print("Switched to DELETE journal mode")
+            except Exception as e:
+                print(f"Could not switch journal mode: {e}")
+        
+        # Give more time for file handles to be released
+        time.sleep(0.3)
     
     def _rebuild_undo_stack_from_history(self):
         """Rebuild the undo stack from git commit history"""

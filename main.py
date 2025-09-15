@@ -1,6 +1,7 @@
 import sys
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -17,6 +18,12 @@ class KeepAwakeManager:
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self._release_keep_awake)
         self.keep_awake_active = False
+        
+        # Countdown timer for status display
+        self.countdown_timer = QTimer()
+        self.countdown_timer.timeout.connect(self._update_countdown)
+        self.remaining_seconds = 0
+        self.status_callback = None  # Will be set by main window
         
         # Platform-specific initialization
         self.platform = sys.platform.lower()
@@ -74,14 +81,26 @@ class KeepAwakeManager:
         else:
             self.platform_available = False
     
+    def set_status_callback(self, callback):
+        """Set callback function to update status display"""
+        self.status_callback = callback
+    
     def user_activity(self):
         """Called when user activity is detected"""
         if not self.platform_available or self.timeout_minutes == 0:
+            if self.status_callback:
+                self.status_callback("")  # Clear status if disabled
             return  # Don't activate keep-awake if disabled (0 minutes)
             
         # Restart the timer
         self.timer.stop()
         self.timer.start(self.timeout_ms)
+        
+        # Start countdown timer
+        self.remaining_seconds = self.timeout_minutes * 60
+        self.countdown_timer.stop()
+        self.countdown_timer.start(1000)  # Update every second
+        self._update_countdown()  # Update immediately
         
         # Activate keep-awake if not already active
         if not self.keep_awake_active:
@@ -123,10 +142,29 @@ class KeepAwakeManager:
         except Exception as e:
             print(f"Failed to activate keep-awake: {e}")
     
+    def _update_countdown(self):
+        """Update countdown display"""
+        if self.remaining_seconds > 0:
+            self.remaining_seconds -= 1
+            minutes = self.remaining_seconds // 60
+            seconds = self.remaining_seconds % 60
+            if self.status_callback:
+                self.status_callback(f"Keep awake: {minutes}:{seconds:02d}")
+        else:
+            # Time's up, stop countdown
+            self.countdown_timer.stop()
+            if self.status_callback:
+                self.status_callback("")
+    
     def _release_keep_awake(self):
         """Release keep-awake mechanism"""
         if not self.keep_awake_active:
             return
+        
+        # Stop countdown timer
+        self.countdown_timer.stop()
+        if self.status_callback:
+            self.status_callback("")
             
         try:
             if self.platform.startswith('win'):
@@ -160,6 +198,7 @@ class KeepAwakeManager:
     def cleanup(self):
         """Clean up resources"""
         self.timer.stop()
+        self.countdown_timer.stop()
         self._release_keep_awake()
 
 try:
@@ -2370,6 +2409,9 @@ class MainWindow(QMainWindow):
         self.status_bar = self.statusBar()
         self.status_bar.showMessage("Ready")
         
+        # Set up keep-awake status callback
+        self.keep_awake_manager.set_status_callback(self.update_keep_awake_status)
+        
         # Create horizontal splitter for resizable panes
         splitter = QSplitter(Qt.Orientation.Horizontal)
         layout.addWidget(splitter)
@@ -2440,27 +2482,57 @@ class MainWindow(QMainWindow):
         # Initialize history panel
         self.update_history_panel()
         
-        # Install event filter for user activity tracking
-        self.installEventFilter(self)
+        # Install event filter on application for comprehensive user activity tracking
+        QApplication.instance().installEventFilter(self)
         
         # Register initial user activity
         self.keep_awake_manager.user_activity()
     
     def eventFilter(self, obj, event):
         """Track user activity for keep-awake functionality"""
-        # Track mouse and keyboard events as user activity
-        if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress, 
-                           QEvent.Type.MouseMove, QEvent.Type.Wheel]:
-            self.keep_awake_manager.user_activity()
+        # Only track events for widgets that belong to this application
+        # Handle both QWidget and QWindow objects
+        try:
+            if obj and hasattr(obj, 'window') and obj.window() == self:
+                # Track meaningful user interaction events
+                if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonRelease,
+                                   QEvent.Type.KeyPress, QEvent.Type.Wheel, 
+                                   QEvent.Type.MouseButtonDblClick]:
+                    # Debug: Print event type occasionally
+                    current_time = time.time()
+                    if not hasattr(self, '_last_debug_time') or (current_time - self._last_debug_time) > 5.0:
+                        self._last_debug_time = current_time
+                        print(f"Keep-awake: User activity detected ({event.type().name}) on {obj.__class__.__name__}")
+                    self.keep_awake_manager.user_activity()
+                # Also track mouse moves, but throttle them to avoid excessive calls
+                elif event.type() == QEvent.Type.MouseMove:
+                    # Only reset on mouse move if we haven't reset recently
+                    current_time = time.time()
+                    if not hasattr(self, '_last_mouse_move_time') or (current_time - self._last_mouse_move_time) > 2.0:
+                        self._last_mouse_move_time = current_time
+                        self.keep_awake_manager.user_activity()
+        except AttributeError:
+            # Ignore objects that don't have expected methods (like QWindow objects)
+            pass
         
         # Let the event continue to be processed
-        return super().eventFilter(obj, event)
+        return False  # Don't consume the event
     
     def closeEvent(self, event):
         """Handle application close to clean up keep-awake"""
+        # Remove event filter from application
+        QApplication.instance().removeEventFilter(self)
+        
         if hasattr(self, 'keep_awake_manager'):
             self.keep_awake_manager.cleanup()
         super().closeEvent(event)
+    
+    def update_keep_awake_status(self, message):
+        """Update the status bar with keep-awake countdown"""
+        if message:
+            self.status_bar.showMessage(message)
+        else:
+            self.status_bar.showMessage("Ready")
     
     def create_breadcrumb_widget(self):
         """Create the breadcrumb navigation widget"""
@@ -5168,9 +5240,21 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Could not create preservation branch: {e}")
             
-            # Reset to the target commit
+            # Reset to the target commit with retry logic
             import pygit2
-            self.db.git_vc.repo.reset(commit.id, pygit2.GIT_RESET_HARD)
+            import time
+            for attempt in range(3):
+                try:
+                    self.db.git_vc.repo.reset(commit.id, pygit2.GIT_RESET_HARD)
+                    break
+                except Exception as reset_error:
+                    print(f"Restore reset attempt {attempt + 1} failed: {reset_error}")
+                    if attempt < 2:  # Not the last attempt
+                        print("Retrying with additional cleanup...")
+                        self.db.git_vc._close_database_connections()
+                        time.sleep(0.5)
+                    else:
+                        raise reset_error
             
             # Reload the UI to reflect the restored state
             self.tree_widget.load_tree()
