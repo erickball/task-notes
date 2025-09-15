@@ -7,6 +7,161 @@ from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from database import DatabaseManager, GitVersionControl, GIT_AVAILABLE
 
+class KeepAwakeManager:
+    """Prevents system sleep for a specified duration after user activity"""
+    
+    def __init__(self, timeout_minutes=15):
+        self.timeout_minutes = timeout_minutes
+        self.timeout_ms = timeout_minutes * 60 * 1000
+        self.timer = QTimer()
+        self.timer.setSingleShot(True)
+        self.timer.timeout.connect(self._release_keep_awake)
+        self.keep_awake_active = False
+        
+        # Platform-specific initialization
+        self.platform = sys.platform.lower()
+        self._init_platform_specific()
+    
+    def _init_platform_specific(self):
+        """Initialize platform-specific keep-awake mechanisms"""
+        if self.platform.startswith('win'):
+            # Windows - use SetThreadExecutionState
+            try:
+                import ctypes
+                self.kernel32 = ctypes.windll.kernel32
+                # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                self.KEEP_AWAKE_FLAG = 0x80000000 | 0x00000001 | 0x00000002
+                self.NORMAL_FLAG = 0x80000000
+                self.platform_available = True
+            except Exception as e:
+                print(f"Windows keep-awake not available: {e}")
+                self.platform_available = False
+                
+        elif self.platform.startswith('darwin'):
+            # macOS - use caffeinate command
+            import subprocess
+            try:
+                # Test if caffeinate is available
+                subprocess.run(['which', 'caffeinate'], check=True, capture_output=True)
+                self.platform_available = True
+                self.caffeinate_process = None
+            except Exception as e:
+                print(f"macOS keep-awake not available: {e}")
+                self.platform_available = False
+                
+        elif self.platform.startswith('linux'):
+            # Linux - try multiple approaches
+            import subprocess
+            self.platform_available = False
+            
+            # Try xset (X11)
+            try:
+                subprocess.run(['which', 'xset'], check=True, capture_output=True)
+                self.linux_method = 'xset'
+                self.platform_available = True
+            except:
+                pass
+            
+            # Try systemd-inhibit as fallback
+            if not self.platform_available:
+                try:
+                    subprocess.run(['which', 'systemd-inhibit'], check=True, capture_output=True)
+                    self.linux_method = 'systemd-inhibit'
+                    self.platform_available = True
+                    self.inhibit_process = None
+                except:
+                    print("Linux keep-awake not available (no xset or systemd-inhibit)")
+        else:
+            self.platform_available = False
+    
+    def user_activity(self):
+        """Called when user activity is detected"""
+        if not self.platform_available or self.timeout_minutes == 0:
+            return  # Don't activate keep-awake if disabled (0 minutes)
+            
+        # Restart the timer
+        self.timer.stop()
+        self.timer.start(self.timeout_ms)
+        
+        # Activate keep-awake if not already active
+        if not self.keep_awake_active:
+            self._activate_keep_awake()
+    
+    def _activate_keep_awake(self):
+        """Activate platform-specific keep-awake mechanism"""
+        if not self.platform_available or self.keep_awake_active:
+            return
+            
+        try:
+            if self.platform.startswith('win'):
+                # Windows
+                self.kernel32.SetThreadExecutionState(self.KEEP_AWAKE_FLAG)
+                
+            elif self.platform.startswith('darwin'):
+                # macOS - start caffeinate process
+                import subprocess
+                if self.caffeinate_process is None or self.caffeinate_process.poll() is not None:
+                    self.caffeinate_process = subprocess.Popen(['caffeinate', '-d'])
+                    
+            elif self.platform.startswith('linux'):
+                # Linux
+                import subprocess
+                if self.linux_method == 'xset':
+                    # Disable screensaver and DPMS
+                    subprocess.run(['xset', 's', 'off'], check=False)
+                    subprocess.run(['xset', '-dpms'], check=False)
+                elif self.linux_method == 'systemd-inhibit':
+                    # Use systemd-inhibit
+                    if self.inhibit_process is None or self.inhibit_process.poll() is not None:
+                        self.inhibit_process = subprocess.Popen([
+                            'systemd-inhibit', '--what=idle:sleep', '--why=Task Notes active', 'sleep', '3600'
+                        ])
+            
+            self.keep_awake_active = True
+            print(f"Keep-awake activated for {self.timeout_minutes} minutes")
+            
+        except Exception as e:
+            print(f"Failed to activate keep-awake: {e}")
+    
+    def _release_keep_awake(self):
+        """Release keep-awake mechanism"""
+        if not self.keep_awake_active:
+            return
+            
+        try:
+            if self.platform.startswith('win'):
+                # Windows - return to normal power state
+                self.kernel32.SetThreadExecutionState(self.NORMAL_FLAG)
+                
+            elif self.platform.startswith('darwin'):
+                # macOS - terminate caffeinate
+                if self.caffeinate_process and self.caffeinate_process.poll() is None:
+                    self.caffeinate_process.terminate()
+                    self.caffeinate_process = None
+                    
+            elif self.platform.startswith('linux'):
+                # Linux
+                import subprocess
+                if self.linux_method == 'xset':
+                    # Re-enable screensaver and DPMS
+                    subprocess.run(['xset', 's', 'on'], check=False)
+                    subprocess.run(['xset', '+dpms'], check=False)
+                elif self.linux_method == 'systemd-inhibit':
+                    if self.inhibit_process and self.inhibit_process.poll() is None:
+                        self.inhibit_process.terminate()
+                        self.inhibit_process = None
+            
+            self.keep_awake_active = False
+            print("Keep-awake released")
+            
+        except Exception as e:
+            print(f"Failed to release keep-awake: {e}")
+    
+    def cleanup(self):
+        """Clean up resources"""
+        self.timer.stop()
+        self._release_keep_awake()
+
 try:
     from dateutil import parser as dateutil_parser
     from dateutil.relativedelta import relativedelta
@@ -112,6 +267,10 @@ class EditableTreeItem(QTreeWidgetItem):
         content = self.note_data['content']
         display_text = content if content.strip() else "(empty note)"
         
+        # Check if content contains image file paths
+        import re
+        has_images = bool(re.search(r'[^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)', content, re.IGNORECASE))
+        
         # Add task indicator with consistent spacing and formatting
         if self.note_data.get('task_status'):
             status = self.note_data['task_status']
@@ -123,6 +282,14 @@ class EditableTreeItem(QTreeWidgetItem):
                 display_text = f"✗ {display_text}"  # Using X mark for cancelled
         
         self.setText(0, display_text)
+        
+        # Apply color styling - blue for notes with images, default for others
+        if has_images:
+            # Set blue color for notes containing images
+            self.setForeground(0, QColor("#0066cc"))
+        else:
+            # Reset to default color
+            self.setForeground(0, QColor())  # Default color
         
         # Apply strikethrough formatting for cancelled tasks
         if self.note_data.get('task_status') == 'cancelled':
@@ -926,24 +1093,22 @@ class NoteTreeWidget(QTreeWidget):
         priority = None
         start_date = None
         due_date = None
+        remaining_text = content
         
-        # Split content into words for parsing
-        words = content.split()
-        if not words:
+        if not content.strip():
             return content, priority, start_date, due_date
         
         # 1. Check for priority pattern (p0-p5) at the end
-        if words and re.match(r'^p[0-5]$', words[-1].lower()):
-            priority_str = words[-1].lower()
-            priority = int(priority_str[1])  # Extract number after 'p'
-            words = words[:-1]  # Remove priority from words
+        # Look for priority pattern at end of content (allowing for trailing whitespace)
+        priority_match = re.search(r'\bp([0-5])\s*$', content, re.IGNORECASE)
+        if priority_match:
+            priority = int(priority_match.group(1))
+            # Remove the priority pattern from the content
+            remaining_text = content[:priority_match.start()].rstrip()
             print(f"Parsed priority: {priority}")
         
-        # Rejoin words for date parsing
-        remaining_text = ' '.join(words)
-        
         # 2. Check for due date pattern (due ...)
-        due_match = re.search(r'\bdue\s+(.+?)(?:\s+start\s|$)', remaining_text, re.IGNORECASE)
+        due_match = re.search(r'\bdue\s+(.+?)(?=\s+start\s|\s*$)', remaining_text, re.IGNORECASE | re.DOTALL)
         if due_match:
             due_text = due_match.group(1).strip()
             try:
@@ -958,7 +1123,7 @@ class NoteTreeWidget(QTreeWidget):
                 print(f"Failed to parse due date '{due_text}': {e}")
         
         # 3. Check for start date pattern (start ...)
-        start_match = re.search(r'\bstart\s+(.+?)(?:\s+due\s|$)', remaining_text, re.IGNORECASE)
+        start_match = re.search(r'\bstart\s+(.+?)(?=\s+due\s|\s*$)', remaining_text, re.IGNORECASE | re.DOTALL)
         if start_match:
             start_text = start_match.group(1).strip()
             try:
@@ -972,8 +1137,15 @@ class NoteTreeWidget(QTreeWidget):
             except Exception as e:
                 print(f"Failed to parse start date '{start_text}': {e}")
         
-        # Clean up any extra whitespace
-        cleaned_content = ' '.join(remaining_text.split())
+        # Clean up extra whitespace while preserving newlines
+        # Split by lines, clean each line individually, then rejoin with newlines
+        lines = remaining_text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Clean each line individually (removes extra spaces but preserves the line structure)
+            cleaned_line = ' '.join(line.split())
+            cleaned_lines.append(cleaned_line)
+        cleaned_content = '\n'.join(cleaned_lines)
         
         return cleaned_content, priority, start_date, due_date
     
@@ -1678,6 +1850,12 @@ class NoteTreeWidget(QTreeWidget):
                     if hasattr(main_window, 'redo'):
                         main_window.redo()
                     return True
+                elif key == Qt.Key.Key_V:
+                    # Handle Ctrl+V for image pasting
+                    if self.handle_clipboard_paste():
+                        return True
+                    # If no image was pasted, let default paste behavior continue
+                    return False
             
             # Handle Tab/Shift-Tab while editing
             if key == Qt.Key.Key_Tab:
@@ -1750,6 +1928,54 @@ class NoteTreeWidget(QTreeWidget):
         
         # Let other events pass through
         return super().eventFilter(obj, event)
+    
+    def handle_clipboard_paste(self):
+        """Handle clipboard paste operations, specifically for images"""
+        from PyQt6.QtGui import QClipboard
+        import os
+        import tempfile
+        from datetime import datetime
+        
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+        
+        # Check if clipboard contains image data
+        if mime_data.hasImage():
+            image = clipboard.image()
+            if not image.isNull():
+                try:
+                    # Create images directory relative to database
+                    main_window = self.window()
+                    if hasattr(main_window, 'db') and hasattr(main_window.db, 'db_path'):
+                        db_dir = os.path.dirname(main_window.db.db_path)
+                        images_dir = os.path.join(db_dir, 'images')
+                    else:
+                        # Fallback to current directory
+                        images_dir = 'images'
+                    
+                    os.makedirs(images_dir, exist_ok=True)
+                    
+                    # Generate unique filename with timestamp
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = f"pasted_image_{timestamp}.png"
+                    image_path = os.path.join(images_dir, filename)
+                    
+                    # Save the image
+                    if image.save(image_path, "PNG"):
+                        # Insert the image path at cursor position
+                        cursor = self.edit_widget.textCursor()
+                        cursor.insertText(f"{image_path}")
+                        return True
+                    else:
+                        print(f"Failed to save image to {image_path}")
+                        return False
+                        
+                except Exception as e:
+                    print(f"Error handling clipboard image: {e}")
+                    return False
+        
+        # No image in clipboard, let default paste behavior handle text/other content
+        return False
     
     def mousePressEvent(self, event):
         """Handle mouse press events for better multi-selection and cursor positioning"""
@@ -1918,6 +2144,10 @@ class NoteTreeWidget(QTreeWidget):
         # Refresh history panel to show task toggle activity
         if hasattr(main_window, 'update_history_panel'):
             main_window.update_history_panel()
+        
+        # Update details panel to immediately reflect task status change
+        if hasattr(main_window, 'update_details_panel'):
+            main_window.update_details_panel()
     
     def cut_notes(self):
         """Cut selected notes to clipboard"""
@@ -2090,6 +2320,10 @@ class MainWindow(QMainWindow):
         last_db_path = self.load_last_database_path()
         self.db = DatabaseManager(last_db_path)
         
+        # Initialize keep-awake manager with user setting
+        keep_awake_timeout = self.load_keep_awake_timeout()
+        self.keep_awake_manager = KeepAwakeManager(timeout_minutes=keep_awake_timeout)
+        
         # Check if git functionality is available and warn if not
         if not GIT_AVAILABLE:
             QMessageBox.warning(
@@ -2166,6 +2400,10 @@ class MainWindow(QMainWindow):
         self.history_panel = self.create_history_panel()
         right_splitter.addWidget(self.history_panel)
         
+        # Store references for panel toggling
+        self.main_splitter = splitter
+        self.right_splitter = right_splitter
+        
         # Set initial splitter proportions - wider side panel for task table
         splitter.setSizes([600, 600])  # More space for right panel with task table
         right_splitter.setSizes([150, 150, 100])  # Space for details, tasks, and history
@@ -2194,6 +2432,28 @@ class MainWindow(QMainWindow):
         
         # Initialize history panel
         self.update_history_panel()
+        
+        # Install event filter for user activity tracking
+        self.installEventFilter(self)
+        
+        # Register initial user activity
+        self.keep_awake_manager.user_activity()
+    
+    def eventFilter(self, obj, event):
+        """Track user activity for keep-awake functionality"""
+        # Track mouse and keyboard events as user activity
+        if event.type() in [QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress, 
+                           QEvent.Type.MouseMove, QEvent.Type.Wheel]:
+            self.keep_awake_manager.user_activity()
+        
+        # Let the event continue to be processed
+        return super().eventFilter(obj, event)
+    
+    def closeEvent(self, event):
+        """Handle application close to clean up keep-awake"""
+        if hasattr(self, 'keep_awake_manager'):
+            self.keep_awake_manager.cleanup()
+        super().closeEvent(event)
     
     def create_breadcrumb_widget(self):
         """Create the breadcrumb navigation widget"""
@@ -2402,7 +2662,7 @@ class MainWindow(QMainWindow):
         self.find_and_select_note(note_id)
     
     def find_and_select_note(self, note_id):
-        """Find a note by ID and select it, focusing on its subtree if necessary"""
+        """Find a note by ID and select it, expanding parent nodes if necessary"""
         # First try to find it in the current tree view
         found_item = self.find_item_in_tree(note_id)
         
@@ -2414,7 +2674,7 @@ class MainWindow(QMainWindow):
             self.tree_widget.scrollToItem(found_item)
             return
         
-        # Not found in current view - get the note and focus on its parent's subtree
+        # Not found in current view - get the note data to find its path
         note_data = self.db.get_note(note_id)
         if not note_data:
             self.status_bar.showMessage(f"Note {note_id} not found", 3000)
@@ -2423,17 +2683,33 @@ class MainWindow(QMainWindow):
         # If we're in a focused subtree, try going to root first
         if self.tree_widget.get_focused_root() != 1:
             self.tree_widget.focus_on_subtree(1)  # Go to root
-            # Try again to find it
-            found_item = self.find_item_in_tree(note_id)
-            if found_item:
-                self.tree_widget.clearSelection()
-                self.tree_widget.setCurrentItem(found_item)
-                found_item.setSelected(True)
-                self.tree_widget.scrollToItem(found_item)
-                return
         
-        # Still not found - the note might be in a collapsed branch
-        self.status_bar.showMessage(f"Note found but may be in collapsed branch (ID: {note_id})", 3000)
+        # Expand parent nodes along the path to make the target note visible
+        note_path = note_data.get('path', '')
+        if note_path:
+            # Parse path (e.g., "1.5.12" means root -> note 5 -> note 12)
+            path_parts = note_path.split('.')
+            
+            # Expand each parent node in sequence
+            for i in range(len(path_parts) - 1):  # Don't expand the target note itself
+                parent_id = int(path_parts[i])
+                parent_item = self.find_item_in_tree(parent_id)
+                if parent_item:
+                    parent_item.setExpanded(True)
+                    # Save expansion state to database
+                    self.db.save_expansion_state(parent_id, True)
+        
+        # Now try to find the target note again after expanding parents
+        found_item = self.find_item_in_tree(note_id)
+        if found_item:
+            self.tree_widget.clearSelection()
+            self.tree_widget.setCurrentItem(found_item)
+            found_item.setSelected(True)
+            self.tree_widget.scrollToItem(found_item)
+            return
+        
+        # Still not found - this shouldn't happen if the path is correct
+        self.status_bar.showMessage(f"Note {note_id} not found after expanding path", 3000)
     
     def find_item_in_tree(self, note_id):
         """Recursively search for a tree item by note ID"""
@@ -2678,6 +2954,56 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Could not save last database path: {e}")
     
+    def load_keep_awake_timeout(self):
+        """Load keep-awake timeout from settings"""
+        try:
+            import json
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                return settings.get("keep_awake_timeout", 15)  # Default to 15 minutes
+        except Exception:
+            return 15  # Default to 15 minutes
+    
+    def save_keep_awake_timeout(self, timeout_minutes):
+        """Save keep-awake timeout to settings"""
+        try:
+            import json
+            
+            # Load existing settings
+            settings = {}
+            try:
+                with open("settings.json", "r") as f:
+                    settings = json.load(f)
+            except Exception:
+                pass
+            
+            # Update keep-awake timeout
+            settings["keep_awake_timeout"] = timeout_minutes
+            
+            # Save settings
+            with open("settings.json", "w") as f:
+                json.dump(settings, f)
+                
+            # Update the keep-awake manager if it exists
+            if hasattr(self, 'keep_awake_manager'):
+                self.keep_awake_manager.timeout_minutes = timeout_minutes
+                self.keep_awake_manager.timeout_ms = timeout_minutes * 60 * 1000
+                
+        except Exception as e:
+            print(f"Could not save keep-awake timeout: {e}")
+    
+    def set_keep_awake_timeout(self, timeout_minutes):
+        """Set the keep-awake timeout and save to settings"""
+        self.save_keep_awake_timeout(timeout_minutes)
+        
+        # Show confirmation message
+        if timeout_minutes > 0:
+            self.status_bar.showMessage(f"Keep-awake timeout set to {timeout_minutes} minutes", 3000)
+            print(f"Keep-awake timeout set to {timeout_minutes} minutes")
+        else:
+            self.status_bar.showMessage("Keep-awake disabled", 3000)
+            print("Keep-awake disabled")
+    
     def add_to_recent_files(self, file_path):
         """Add a file to the recent files list"""
         import os
@@ -2889,6 +3215,14 @@ class MainWindow(QMainWindow):
         
         edit_menu.addSeparator()
         
+        # Search action
+        search_action = QAction("Search Notes...", self)
+        search_action.setShortcut("Ctrl+F")
+        search_action.triggered.connect(self.show_search_dialog)
+        edit_menu.addAction(search_action)
+        
+        edit_menu.addSeparator()
+        
         delete_action = QAction("Delete", self)
         delete_action.setShortcut("Del")
         delete_action.triggered.connect(lambda: self.tree_widget.delete_current_note())
@@ -2912,6 +3246,27 @@ class MainWindow(QMainWindow):
         
         view_menu.addSeparator()
         
+        # Panel visibility toggles
+        self.details_pane_action = QAction("Show Details Pane", self)
+        self.details_pane_action.setCheckable(True)
+        self.details_pane_action.setChecked(True)
+        self.details_pane_action.triggered.connect(self.toggle_details_pane)
+        view_menu.addAction(self.details_pane_action)
+        
+        self.task_dashboard_action = QAction("Show Task Dashboard", self)
+        self.task_dashboard_action.setCheckable(True)
+        self.task_dashboard_action.setChecked(True)
+        self.task_dashboard_action.triggered.connect(self.toggle_task_dashboard)
+        view_menu.addAction(self.task_dashboard_action)
+        
+        self.history_pane_action = QAction("Show History Pane", self)
+        self.history_pane_action.setCheckable(True)
+        self.history_pane_action.setChecked(True)
+        self.history_pane_action.triggered.connect(self.toggle_history_pane)
+        view_menu.addAction(self.history_pane_action)
+        
+        view_menu.addSeparator()
+        
         # Font size submenu
         font_menu = view_menu.addMenu("Font Size")
         
@@ -2931,6 +3286,22 @@ class MainWindow(QMainWindow):
         font_reset_action.setShortcut("Ctrl+0")
         font_reset_action.triggered.connect(self.reset_font_size)
         font_menu.addAction(font_reset_action)
+        
+        # Keep-awake timeout submenu
+        view_menu.addSeparator()
+        keep_awake_menu = view_menu.addMenu("Keep Screen Awake")
+        
+        # Create timeout options
+        timeout_options = [5, 10, 15, 20, 30, 60]  # Minutes
+        for timeout in timeout_options:
+            action = QAction(f"{timeout} minutes", self)
+            action.triggered.connect(lambda checked, t=timeout: self.set_keep_awake_timeout(t))
+            keep_awake_menu.addAction(action)
+        
+        keep_awake_menu.addSeparator()
+        disable_action = QAction("Disabled", self)
+        disable_action.triggered.connect(lambda: self.set_keep_awake_timeout(0))
+        keep_awake_menu.addAction(disable_action)
         
         # Add git history if available
         # Navigation actions
@@ -3012,6 +3383,15 @@ class MainWindow(QMainWindow):
         toggle_task_action.setToolTip("Toggle task status")
         toggle_task_action.triggered.connect(self.tree_widget.toggle_task)
         toolbar.addAction(toggle_task_action)
+        
+        # Add separator
+        toolbar.addSeparator()
+        
+        # Search button
+        search_action = QAction("🔍 Find", self)
+        search_action.setToolTip("Search notes (Ctrl+F)")
+        search_action.triggered.connect(self.show_search_dialog)
+        toolbar.addAction(search_action)
     
     def create_details_panel(self):
         """Create the note details panel"""
@@ -3109,8 +3489,11 @@ class MainWindow(QMainWindow):
         
         # Content preview (no separate label)
         self.detail_content = QTextEdit()
-        self.detail_content.setMaximumHeight(120)
+        self.detail_content.setMaximumHeight(200)  # Increased height to accommodate images
         self.detail_content.setReadOnly(True)
+        self.detail_content.setAcceptRichText(True)  # Enable HTML/rich text support
+        # Connect click events to handle image zoom
+        self.detail_content.mousePressEvent = self.handle_detail_content_click
         layout.addWidget(self.detail_content)
         
         layout.addStretch()
@@ -3181,13 +3564,19 @@ class MainWindow(QMainWindow):
         self.active_tasks_table.itemChanged.connect(self.on_task_table_item_changed)
         self.active_tasks_table.itemClicked.connect(self.on_task_table_item_clicked)
         
-        # Adjust column widths
+        # Allow horizontal scrolling and flexible column widths
+        self.active_tasks_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        # Set column widths but allow scrolling if needed
         header = self.active_tasks_table.horizontalHeader()
         header.setStretchLastSection(False)
         header.resizeSection(0, 200)  # Task column wider
         header.resizeSection(1, 100)  # Start Date
         header.resizeSection(2, 100)  # Due Date
         header.resizeSection(3, 80)   # Priority
+        
+        # Set a reasonable minimum width for the table itself
+        self.active_tasks_table.setMinimumWidth(200)  # Much smaller minimum
         
         layout.addWidget(self.active_tasks_table)
         
@@ -3360,6 +3749,129 @@ class MainWindow(QMainWindow):
                 breadcrumbs.append(f"#{note_id_str}")
         
         return " → ".join(breadcrumbs)
+    
+    def format_content_with_images(self, content):
+        """Format content to display images inline with text"""
+        import re
+        import os
+        
+        if not content:
+            return ""
+        
+        # Convert plain text to HTML and preserve line breaks
+        html_content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+        html_content = html_content.replace('\n', '<br>')
+        
+        # Image file extensions to detect
+        image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.ico'}
+        
+        # Pattern to match file paths that could be images
+        # Matches: /path/to/file.jpg, ./file.png, C:\path\file.jpg, ~/file.png, etc.
+        file_path_pattern = r'(?:^|\s)([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))(?=\s|$)'
+        
+        def replace_image_path(match):
+            file_path = match.group(1)
+            
+            # Check if the file exists and is an image
+            if os.path.isfile(file_path):
+                # Convert to absolute path for the HTML img src
+                abs_path = os.path.abspath(file_path)
+                # Add unique ID for hover zoom functionality
+                import uuid
+                img_id = f"img_{uuid.uuid4().hex[:8]}"
+                return f'<br><img id="{img_id}" src="file:///{abs_path.replace(os.sep, "/")}" style="max-width: 180px; max-height: 120px; margin: 5px 0; cursor: pointer; border: 1px solid #ddd;" title="Click to zoom"><br>{file_path}<br>'
+            else:
+                # File doesn't exist, keep as text but highlight it
+                return f'<span style="color: #888; font-style: italic;">{file_path} (not found)</span>'
+        
+        # Replace image paths with HTML img tags
+        html_content = re.sub(file_path_pattern, replace_image_path, html_content, flags=re.IGNORECASE)
+        
+        return html_content
+    
+    def handle_detail_content_click(self, event):
+        """Handle clicks in the detail content area to detect image clicks"""
+        # First, let the default handling occur
+        QTextEdit.mousePressEvent(self.detail_content, event)
+        
+        # Get the cursor at the click position
+        cursor = self.detail_content.cursorForPosition(event.pos())
+        
+        # Get the format at cursor position to check if it's an image
+        char_format = cursor.charFormat()
+        
+        # Check if we clicked on an image by looking at the HTML around cursor
+        html_content = self.detail_content.toHtml()
+        cursor_pos = cursor.position()
+        
+        # Find all images in the content and check which one we clicked
+        import re
+        img_pattern = r'<img[^>]*src="([^"]*)"[^>]*>'
+        
+        # Get the plain text version to better map positions
+        plain_text = self.detail_content.toPlainText()
+        
+        # Look for image file patterns in the plain text that correspond to our current content
+        selected_items = [item for item in self.tree_widget.selectedItems() 
+                         if isinstance(item, EditableTreeItem)]
+        if selected_items:
+            note_content = selected_items[0].note_data.get('content', '')
+            
+            # Find image file paths in the original content
+            file_path_pattern = r'([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))'
+            image_matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
+            
+            # Check if any image file exists and show the first valid one we find
+            # This is a simplified approach - we'll show zoom for any image in the content when clicked
+            import os
+            for image_path in image_matches:
+                if os.path.isfile(image_path):
+                    # Check if the click was roughly in the area where images are displayed
+                    # Since HTML positioning is complex, we'll be more permissive
+                    self.show_image_zoom(image_path)
+                    break
+    
+    def show_image_zoom(self, image_path):
+        """Show a zoomed view of the image in a dialog"""
+        from PyQt6.QtWidgets import QDialog, QLabel, QVBoxLayout, QScrollArea
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtCore import Qt
+        import os
+        
+        if not os.path.exists(image_path):
+            return
+        
+        # Create zoom dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Image Zoom - {os.path.basename(image_path)}")
+        dialog.setModal(False)  # Allow interaction with main window
+        dialog.resize(800, 600)
+        
+        # Create scroll area for large images
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        # Load and display image
+        label = QLabel()
+        pixmap = QPixmap(image_path)
+        
+        # Scale image if too large, but allow it to be bigger than preview
+        max_size = 1200
+        if pixmap.width() > max_size or pixmap.height() > max_size:
+            pixmap = pixmap.scaled(max_size, max_size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        
+        label.setPixmap(pixmap)
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        scroll_area.setWidget(label)
+        
+        # Set up dialog layout
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(scroll_area)
+        
+        # Show dialog
+        dialog.show()
 
     def update_details_panel(self):
         """Update the details panel with selected note info"""
@@ -3488,9 +4000,10 @@ class MainWindow(QMainWindow):
                 self.task_fields_widget.hide()
                 self.current_task_id = None
             
-            # Content preview
+            # Content preview with image support
             content = note_data.get('content', '')
-            self.detail_content.setText(content)
+            formatted_content = self.format_content_with_images(content)
+            self.detail_content.setHtml(formatted_content)
             
             # Count children
             children = self.db.get_children(note_data['id'])
@@ -4031,10 +4544,22 @@ class MainWindow(QMainWindow):
         def smart_sort_key(task):
             priority = task['priority'] or 0
             due_date = task['due_date']
+            start_date = task['start_date']
             content = task['content']
+            category = task.get('category', 'Misc')
             
             # Priority 0 (None) should be at the bottom, then ascending priority (lower numbers = higher priority)
             priority_sort = (1 if priority == 0 else 0, priority if priority != 0 else 999)
+            
+            # Start date sorting (for Upcoming and Future categories when same priority)
+            if category in ['Upcoming', 'Future'] and start_date:
+                try:
+                    start_dt = datetime.fromisoformat(start_date)
+                    start_sort = (0, start_dt)
+                except:
+                    start_sort = (1, datetime.max)
+            else:
+                start_sort = (1, datetime.max)  # No start date influence for other categories
             
             # Due date sorting (None dates go to end)
             if due_date:
@@ -4049,7 +4574,8 @@ class MainWindow(QMainWindow):
             # Content for tie-breaking
             content_sort = content.lower()
             
-            return (priority_sort, due_sort, content_sort)
+            # Return sort key: priority first, then start date (for upcoming/future), then due date, then content
+            return (priority_sort, start_sort, due_sort, content_sort)
         
         # Sort each category
         in_progress.sort(key=smart_sort_key)
@@ -4167,6 +4693,33 @@ class MainWindow(QMainWindow):
             # No settings file or error reading it - use default
             pass
     
+    def toggle_details_pane(self):
+        """Toggle visibility of the details pane"""
+        if self.details_panel.isVisible():
+            self.details_panel.hide()
+            self.details_pane_action.setText("Show Details Pane")
+        else:
+            self.details_panel.show()
+            self.details_pane_action.setText("Hide Details Pane")
+    
+    def toggle_task_dashboard(self):
+        """Toggle visibility of the task dashboard"""
+        if self.task_dashboard.isVisible():
+            self.task_dashboard.hide()
+            self.task_dashboard_action.setText("Show Task Dashboard")
+        else:
+            self.task_dashboard.show()
+            self.task_dashboard_action.setText("Hide Task Dashboard")
+    
+    def toggle_history_pane(self):
+        """Toggle visibility of the history pane"""
+        if self.history_panel.isVisible():
+            self.history_panel.hide()
+            self.history_pane_action.setText("Show History Pane")
+        else:
+            self.history_panel.show()
+            self.history_pane_action.setText("Hide History Pane")
+    
     def undo(self):
         """Undo last change using git"""
         if self.db.git_vc and self.db.git_vc.undo():
@@ -4186,41 +4739,331 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage("Cannot redo - no forward version available", 3000)
     
     def show_git_history(self):
-        """Show git commit history"""
+        """Show git commit history with branching visualization"""
         if not self.db.git_vc:
             return
             
-        history = self.db.git_vc.get_history(20)
-        if not history:
+        commit_tree = self.db.git_vc.get_commit_tree(50)
+        if not commit_tree:
             QMessageBox.information(self, "History", "No version history available")
             return
         
         # Create history dialog
         dialog = QDialog(self)
-        dialog.setWindowTitle("Version History")
-        dialog.setModal(True)
-        dialog.resize(600, 400)
+        dialog.setWindowTitle("Version History - Commit Tree")
+        dialog.setModal(False)  # Allow interaction with main window
+        dialog.resize(800, 600)
         
         layout = QVBoxLayout(dialog)
         
-        # Create history list
-        history_list = QListWidget()
-        for commit in history:
-            item_text = f"{commit['date'].strftime('%Y-%m-%d %H:%M:%S')} - {commit['message']}"
-            history_list.addItem(item_text)
+        # Add explanation
+        info_label = QLabel("Complete commit tree showing all branches and merges:")
+        info_label.setStyleSheet("font-weight: bold; margin-bottom: 5px;")
+        layout.addWidget(info_label)
         
-        layout.addWidget(QLabel("Recent changes (newest first):"))
-        layout.addWidget(history_list)
+        # Create tree visualization
+        from PyQt6.QtWidgets import QTextEdit
+        tree_display = QTextEdit()
+        tree_display.setReadOnly(True)
+        tree_display.setFont(QFont("Consolas", 10))  # Monospace font for alignment
         
-        # Add close button
+        # Build the tree display text
+        tree_text = self.build_commit_tree_display(commit_tree)
+        tree_display.setPlainText(tree_text)
+        
+        layout.addWidget(tree_display)
+        
+        # Add legend
+        legend_layout = QHBoxLayout()
+        legend = QLabel("Legend: ● HEAD  ◦ Commit  │ Linear history  ├─ Branch point  ┤ Merge  └─ ┌─ Branch connections")
+        legend.setStyleSheet("font-size: 10px; color: #666;")
+        legend_layout.addWidget(legend)
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
+        
+        # Add buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
+        
+        refresh_button = QPushButton("Refresh")
+        refresh_button.clicked.connect(lambda: self.refresh_history_dialog(dialog, tree_display))
+        button_layout.addWidget(refresh_button)
+        
         close_button = QPushButton("Close")
-        close_button.clicked.connect(dialog.accept)
+        close_button.clicked.connect(dialog.close)
         button_layout.addWidget(close_button)
+        
         layout.addLayout(button_layout)
         
-        dialog.exec()
+        dialog.show()
+    
+    def build_commit_tree_display(self, commits):
+        """Build a git log --graph style commit tree display"""
+        if not commits:
+            return "No commits found."
+        
+        # Build commit mapping and sort by date (newest first)
+        commit_map = {c['id']: c for c in commits}
+        sorted_commits = sorted(commits, key=lambda c: c['date'], reverse=True)
+        
+        # Track column assignments for each commit
+        commit_columns = {}
+        next_column = 0
+        lines = []
+        
+        # Find HEAD commit to start with column 0
+        head_commit = None
+        for commit in sorted_commits:
+            if commit['is_head']:
+                head_commit = commit
+                break
+        
+        if head_commit:
+            commit_columns[head_commit['id']] = 0
+            next_column = 1
+        
+        # Process commits in chronological order
+        for commit in sorted_commits:
+            commit_id = commit['id']
+            
+            # Assign column if not already assigned
+            if commit_id not in commit_columns:
+                commit_columns[commit_id] = next_column
+                next_column += 1
+            
+            current_column = commit_columns[commit_id]
+            
+            # Assign columns to parents (they come after this commit chronologically)
+            parents = commit['parents']
+            if parents:
+                # First parent stays in same column (linear history)
+                if parents[0] in commit_map and parents[0] not in commit_columns:
+                    commit_columns[parents[0]] = current_column
+                
+                # Additional parents get new columns (merges)
+                for parent_id in parents[1:]:
+                    if parent_id in commit_map and parent_id not in commit_columns:
+                        commit_columns[parent_id] = next_column
+                        next_column += 1
+            
+            # Assign columns to additional children (branches)
+            children = commit['children']
+            if len(children) > 1:
+                # First child already handled by parent assignment
+                # Additional children get new columns
+                for child_id in children[1:]:
+                    if child_id in commit_map and child_id not in commit_columns:
+                        commit_columns[child_id] = next_column
+                        next_column += 1
+        
+        # Build the display
+        max_column = max(commit_columns.values()) if commit_columns else 0
+        
+        for i, commit in enumerate(sorted_commits):
+            commit_id = commit['id']
+            column = commit_columns.get(commit_id, 0)
+            
+            # Build the line with proper column positioning
+            line_parts = []
+            
+            # Add columns before current commit
+            for col in range(column):
+                # Check if there's a commit in this column that continues
+                has_continuation = any(commit_columns.get(c['id'], -1) == col 
+                                    for c in sorted_commits[i+1:] if c['id'] in commit_map)
+                line_parts.append("│ " if has_continuation else "  ")
+            
+            # Choose symbol based on commit type
+            if commit['is_head']:
+                symbol = "●"  # Solid circle for HEAD
+            elif commit['has_multiple_children'] or commit['has_multiple_parents']:
+                symbol = "◦"  # Open circle for branch/merge points
+            else:
+                symbol = "◦"  # Regular commit
+            
+            # Add branch connectors for multiple parents/children
+            if len(commit['parents']) > 1:
+                # Merge commit - show incoming branches
+                symbol = "◦"
+                # Add merge indicator in the next line
+            elif len(commit['children']) > 1:
+                # Branch point - will show outgoing branches
+                symbol = "◦"
+            
+            # Format commit info
+            date_str = commit['date'].strftime('%m-%d %H:%M')
+            message = commit['message'][:60] + "..." if len(commit['message']) > 60 else commit['message']
+            
+            # Add indicators
+            indicators = []
+            if commit['is_head']:
+                indicators.append("HEAD")
+            if commit['has_multiple_children']:
+                indicators.append("BRANCH")
+            if commit['has_multiple_parents']:
+                indicators.append("MERGE")
+            
+            indicator_text = f" [{', '.join(indicators)}]" if indicators else ""
+            
+            # Build the main commit line
+            commit_line = f"{symbol} {date_str} {message}{indicator_text}"
+            line_parts.append(commit_line)
+            
+            lines.append("".join(line_parts))
+            
+            # Add connection lines for branches/merges
+            if len(commit['children']) > 1 or len(commit['parents']) > 1:
+                connection_line = []
+                
+                for col in range(max_column + 1):
+                    if col == column:
+                        # Current commit column
+                        if len(commit['children']) > 1:
+                            connection_line.append("├─")
+                        elif len(commit['parents']) > 1:
+                            connection_line.append("┤ ")
+                        else:
+                            connection_line.append("│ ")
+                    elif col in [commit_columns.get(child_id, -1) for child_id in commit['children'][1:]]:
+                        connection_line.append("└─")
+                    elif col in [commit_columns.get(parent_id, -1) for parent_id in commit['parents'][1:]]:
+                        connection_line.append("┌─")
+                    else:
+                        # Check if this column continues
+                        has_continuation = any(commit_columns.get(c['id'], -1) == col 
+                                            for c in sorted_commits[i+1:] if c['id'] in commit_map)
+                        connection_line.append("│ " if has_continuation else "  ")
+                
+                if any(part not in ["  ", "│ "] for part in connection_line):
+                    lines.append("".join(connection_line))
+            
+            # Add continuation line for linear progression
+            elif i < len(sorted_commits) - 1:
+                continuation_line = []
+                for col in range(max_column + 1):
+                    has_continuation = any(commit_columns.get(c['id'], -1) == col 
+                                        for c in sorted_commits[i+1:] if c['id'] in commit_map)
+                    continuation_line.append("│ " if has_continuation else "  ")
+                
+                if any(part == "│ " for part in continuation_line):
+                    lines.append("".join(continuation_line))
+        
+        return "\n".join(lines)
+    
+    def refresh_history_dialog(self, dialog, tree_display):
+        """Refresh the history dialog with updated commit tree"""
+        commit_tree = self.db.git_vc.get_commit_tree(50)
+        tree_text = self.build_commit_tree_display(commit_tree)
+        tree_display.setPlainText(tree_text)
+    
+    def show_search_dialog(self):
+        """Show search dialog to find notes"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QLabel
+        
+        # Create search dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Search Notes")
+        dialog.setModal(False)  # Allow interaction with main window
+        dialog.resize(500, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Search input
+        search_layout = QHBoxLayout()
+        search_layout.addWidget(QLabel("Search for:"))
+        
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Enter search term...")
+        search_layout.addWidget(self.search_input)
+        
+        search_button = QPushButton("Search")
+        search_button.clicked.connect(lambda: self.perform_search(dialog))
+        search_layout.addWidget(search_button)
+        
+        layout.addLayout(search_layout)
+        
+        # Results list
+        layout.addWidget(QLabel("Results:"))
+        self.search_results = QListWidget()
+        self.search_results.itemDoubleClicked.connect(self.on_search_result_selected)
+        layout.addWidget(self.search_results)
+        
+        # Status label
+        self.search_status = QLabel("Enter a search term and click Search")
+        layout.addWidget(self.search_status)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.close)
+        button_layout.addWidget(close_button)
+        
+        layout.addLayout(button_layout)
+        
+        # Connect Enter key to search
+        self.search_input.returnPressed.connect(lambda: self.perform_search(dialog))
+        
+        # Focus on search input
+        self.search_input.setFocus()
+        
+        # Show dialog
+        dialog.show()
+    
+    def perform_search(self, dialog):
+        """Perform the actual search"""
+        search_term = self.search_input.text().strip()
+        
+        if not search_term:
+            self.search_status.setText("Please enter a search term")
+            return
+        
+        # Clear previous results
+        self.search_results.clear()
+        
+        try:
+            # Search in database
+            results = self.db.search_notes(search_term)
+            
+            if results:
+                self.search_status.setText(f"Found {len(results)} result(s)")
+                
+                for note in results:
+                    # Create display text for result
+                    content = note['content'][:100]  # First 100 characters
+                    if len(note['content']) > 100:
+                        content += "..."
+                    
+                    # Add task indicator if it's a task
+                    task_indicator = ""
+                    if note.get('task_status'):
+                        if note['task_status'] == 'complete':
+                            task_indicator = "☑ "
+                        elif note['task_status'] == 'active':
+                            task_indicator = "☐ "
+                        elif note['task_status'] == 'cancelled':
+                            task_indicator = "✗ "
+                    
+                    display_text = f"{task_indicator}{content}"
+                    
+                    # Create list item and store note ID
+                    item = QListWidgetItem(display_text)
+                    item.setData(Qt.ItemDataRole.UserRole, note['id'])
+                    self.search_results.addItem(item)
+            else:
+                self.search_status.setText("No results found")
+                
+        except Exception as e:
+            self.search_status.setText(f"Search error: {e}")
+    
+    def on_search_result_selected(self, item):
+        """Handle when a search result is selected"""
+        note_id = item.data(Qt.ItemDataRole.UserRole)
+        if note_id:
+            # Navigate to the note
+            self.find_and_select_note(note_id)
+            self.status_bar.showMessage(f"Navigated to note {note_id}", 2000)
     
     def closeEvent(self, event):
         """Handle application closing"""

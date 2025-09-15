@@ -510,6 +510,24 @@ class DatabaseManager:
                 WHERE id = ?
             """, (is_expanded, note_id))
             conn.commit()
+    
+    def search_notes(self, search_term: str) -> List[Dict]:
+        """Search notes by content, returns list of matching notes"""
+        if not search_term.strip():
+            return []
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
+                FROM notes n
+                LEFT JOIN tasks t ON n.id = t.note_id
+                WHERE n.content LIKE ?
+                ORDER BY n.modified_at DESC
+                LIMIT 100
+            """, (f"%{search_term}%",))
+            
+            return [dict(row) for row in cursor.fetchall()]
 
 
 class GitVersionControl:
@@ -591,26 +609,48 @@ class GitVersionControl:
             return False
     
     def undo(self) -> bool:
-        """Undo last change by reverting to previous commit"""
+        """Undo last change by creating a branch to preserve history"""
         if not self.repo or not self.undo_stack:
             return False
             
         try:
-            # Ensure database connections are closed before git reset
+            # Ensure database connections are closed before git operations
             self._close_database_connections()
             
-            # Get current HEAD to put on redo stack
-            current_head = str(self.repo.head.target)
+            # Get current HEAD to preserve on a branch
+            current_head = self.repo.head.target
+            current_head_str = str(current_head)
             
             # Get commit to undo to
             undo_to_commit_id = self.undo_stack.pop()
             undo_commit = self.repo[undo_to_commit_id]
             
+            # Create a branch to preserve the current state
+            import time
+            branch_name = f"undone-{int(time.time())}"
+            try:
+                # Check if branch already exists
+                if branch_name in self.repo.branches.local:
+                    print(f"Branch '{branch_name}' already exists")
+                else:
+                    current_commit = self.repo[current_head]  # Convert Oid to Commit
+                    new_branch = self.repo.branches.local.create(branch_name, current_commit)
+                    print(f"Created branch '{branch_name}' to preserve undone commits")
+                    print(f"Branch points to commit: {new_branch.target}")
+                    
+                # List all branches after creation
+                print(f"All local branches after creation: {list(self.repo.branches.local.keys())}")
+                    
+            except Exception as e:
+                print(f"Could not create preservation branch: {e}")
+                import traceback
+                traceback.print_exc()
+            
             # Reset to the undo commit
             self.repo.reset(undo_commit.id, pygit2.GIT_RESET_HARD)
             
             # Add current HEAD to redo stack
-            self.redo_stack.append(current_head)
+            self.redo_stack.append(current_head_str)
             
             return True
             
@@ -665,6 +705,125 @@ class GitVersionControl:
             return history
         except Exception as e:
             print(f"Failed to get git history: {e}")
+            return []
+    
+    def get_commit_tree(self, limit: int = 50) -> List[Dict]:
+        """Get complete commit tree structure with branching information"""
+        if not self.repo:
+            return []
+            
+        try:
+            # Get all refs (branches, HEAD)
+            refs = []
+            try:
+                refs.append(('HEAD', self.repo.head.target))
+            except:
+                pass
+            
+            # Get all branches (both local and remote)
+            try:
+                # Get local branches
+                for branch_name in self.repo.branches.local:
+                    try:
+                        branch = self.repo.branches.local[branch_name]
+                        refs.append((f"local/{branch_name}", branch.target))
+                        print(f"Found local branch: {branch_name}")
+                    except Exception as e:
+                        print(f"Error accessing local branch {branch_name}: {e}")
+                        continue
+                
+                # Get remote branches
+                for branch_name in self.repo.branches.remote:
+                    try:
+                        branch = self.repo.branches.remote[branch_name]
+                        refs.append((f"remote/{branch_name}", branch.target))
+                        print(f"Found remote branch: {branch_name}")
+                    except Exception as e:
+                        print(f"Error accessing remote branch {branch_name}: {e}")
+                        continue
+                        
+            except Exception as e:
+                print(f"Error enumerating branches: {e}")
+                # Fallback to old method
+                for branch_name in self.repo.branches:
+                    try:
+                        branch = self.repo.branches[branch_name]
+                        refs.append((branch_name, branch.target))
+                        print(f"Found branch (fallback): {branch_name}")
+                    except:
+                        continue
+            
+            # Also include commits from undo/redo stacks to show "unreachable" commits
+            for commit_id in self.undo_stack + self.redo_stack:
+                try:
+                    commit_oid = self.repo.get(commit_id)
+                    if commit_oid:
+                        refs.append((f'undo/redo-{commit_id[:8]}', commit_oid.id))
+                except:
+                    continue
+            
+            # Debug: Print all found refs
+            print(f"Found {len(refs)} refs for commit tree:")
+            for ref_name, ref_target in refs:
+                print(f"  {ref_name}: {ref_target}")
+            
+            # Collect all commits reachable from any ref
+            all_commits = {}
+            commit_children = {}  # Track parent->children relationships
+            
+            for ref_name, ref_target in refs:
+                try:
+                    for commit in self.repo.walk(ref_target):
+                        commit_id = str(commit.id)
+                        
+                        if commit_id not in all_commits:
+                            all_commits[commit_id] = {
+                                'id': commit_id,
+                                'message': commit.message.strip(),
+                                'author': commit.author.name,
+                                'date': datetime.fromtimestamp(commit.commit_time),
+                                'parents': [str(p) for p in commit.parent_ids],
+                                'refs': [],
+                                'is_head': False
+                            }
+                        
+                        # Mark if this is the HEAD commit
+                        if ref_name == 'HEAD':
+                            all_commits[commit_id]['is_head'] = True
+                        
+                        # Add ref information
+                        if ref_name not in all_commits[commit_id]['refs']:
+                            all_commits[commit_id]['refs'].append(ref_name)
+                        
+                        # Track parent-child relationships
+                        for parent_id in commit.parent_ids:
+                            parent_id_str = str(parent_id)
+                            if parent_id_str not in commit_children:
+                                commit_children[parent_id_str] = []
+                            if commit_id not in commit_children[parent_id_str]:
+                                commit_children[parent_id_str].append(commit_id)
+                        
+                        if len(all_commits) >= limit:
+                            break
+                except Exception as e:
+                    print(f"Error walking commits from {ref_name}: {e}")
+                    continue
+            
+            # Convert to list and sort by date (newest first)
+            commit_list = list(all_commits.values())
+            commit_list.sort(key=lambda x: x['date'], reverse=True)
+            
+            # Add tree structure information
+            for commit in commit_list:
+                commit_id = commit['id']
+                commit['children'] = commit_children.get(commit_id, [])
+                commit['has_multiple_children'] = len(commit['children']) > 1
+                commit['has_multiple_parents'] = len(commit['parents']) > 1
+            
+            return commit_list[:limit]
+            
+        except Exception as e:
+            print(f"Failed to get commit tree: {e}")
             return []
     
     def _close_database_connections(self):
