@@ -304,7 +304,10 @@ class EditableTreeItem(QTreeWidgetItem):
     def update_display(self):
         """Update the display text based on note data"""
         content = self.note_data['content']
-        display_text = content if content.strip() else "(empty note)"
+        if content.strip():
+            display_text = content
+        else:
+            display_text = "(empty note)"
         
         # Check if content contains image file paths
         import re
@@ -321,10 +324,6 @@ class EditableTreeItem(QTreeWidgetItem):
                 display_text = f"✗ {display_text}"  # Using X mark for cancelled
         
         self.setText(0, display_text)
-        
-        # Trigger size recalculation for proper wrapping
-        if self.treeWidget():
-            self.treeWidget().scheduleDelayedItemsLayout()
         
         # Apply color styling - blue for notes with images, default for others
         if has_images:
@@ -345,43 +344,49 @@ class EditableTreeItem(QTreeWidgetItem):
             font.setStrikeOut(False)
             self.setFont(0, font)
     
-    def sizeHint(self, column):
-        """Calculate proper size hint based on wrapped text content"""
-        if column != 0:
-            return super().sizeHint(column)
+    def remove_padding_newlines(self, content):
+        """Remove trailing newlines that were added for display padding"""
+        # Since we're no longer adding padding newlines, just return content as-is
+        return content
+
+class NoEllipsisDelegate(QStyledItemDelegate):
+    """Custom delegate to prevent text eliding and ensure proper wrapping"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+    
+    def sizeHint(self, option, index):
+        """Calculate the size needed for the item"""
+        # Get the default size hint
+        size = super().sizeHint(option, index)
         
-        # Get the tree widget to calculate available width
-        tree_widget = self.treeWidget()
-        if not tree_widget:
-            return super().sizeHint(column)
-        
-        # Get available width (subtract some padding and decoration space)
-        available_width = tree_widget.columnWidth(0) - 60  # Leave room for tree decorations
-        if available_width <= 0:
-            available_width = 200  # Fallback width
-        
-        # Calculate text height based on content and available width
-        text = self.text(0)
+        # Get the text content
+        text = index.data(Qt.ItemDataRole.DisplayRole)
         if not text:
-            return super().sizeHint(column)
+            return size
         
-        # Use QTextDocument to calculate wrapped text height
-        from PyQt6.QtGui import QTextDocument, QFontMetrics
-        font = self.font(0)
-        font_metrics = QFontMetrics(font)
+        # Calculate proper height for wrapped text
+        widget = self.parent()
+        if widget and hasattr(widget, 'columnWidth'):
+            available_width = widget.columnWidth(0) - 60  # Leave room for decorations
+            if available_width > 0:
+                font_metrics = QFontMetrics(option.font)
+                text_rect = font_metrics.boundingRect(
+                    0, 0, available_width, 0,
+                    Qt.TextFlag.TextWordWrap, text
+                )
+                size.setHeight(max(size.height(), text_rect.height() + 10))  # Add padding
         
-        doc = QTextDocument()
-        doc.setDefaultFont(font)
-        doc.setTextWidth(available_width)
-        doc.setPlainText(text)
+        return size
+    
+    def paint(self, painter, option, index):
+        """Paint the item without ellipsis"""
+        # Modify the option to prevent eliding
+        opt = QStyleOptionViewItem(option)
+        opt.textElideMode = Qt.TextElideMode.ElideNone
         
-        # Calculate height with some padding
-        text_height = int(doc.size().height()) + 8  # Add padding
-        min_height = font_metrics.height() + 8  # Minimum height for single line
-        
-        height = max(text_height, min_height)
-        
-        return QSize(available_width, height)
+        # Call the parent paint method
+        super().paint(painter, opt, index)
 
 class NoteTreeWidget(QTreeWidget):
     def __init__(self, db_manager):
@@ -400,12 +405,21 @@ class NoteTreeWidget(QTreeWidget):
         self.setUniformRowHeights(False)  # Allow variable row heights for wrapped text
         self.setTextElideMode(Qt.TextElideMode.ElideNone)  # Don't elide text, let it wrap instead
         
+        # Configure header to prevent ellipsis
+        header = self.header()
+        header.setStretchLastSection(True)
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        
+        # Set a custom delegate to handle text wrapping without ellipsis
+        delegate = NoEllipsisDelegate(self)
+        self.setItemDelegate(delegate)
+        
         # Add subtle borders around items
         self.setStyleSheet("""
             QTreeWidget::item {
                 border: 1px dotted #f0f0f0;
                 border-radius: 3px;
-                padding: 4px;
+                padding: 2px;
                 margin: 1px;
             }
             QTreeWidget::item:selected {
@@ -905,7 +919,8 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget = QTextEdit()
         
         # Add task marker to the editing content if it's a task
-        content = item.note_data['content']
+        # Remove any padding newlines that were added for display
+        content = item.remove_padding_newlines(item.note_data['content'])
         task_prefix = ""
         if item.note_data.get('task_status'):
             status = item.note_data['task_status']
@@ -973,7 +988,8 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget = QTextEdit()
         
         # Add task marker to the editing content if it's a task
-        content = item.note_data['content']
+        # Remove any padding newlines that were added for display
+        content = item.remove_padding_newlines(item.note_data['content'])
         task_prefix = ""
         if item.note_data.get('task_status'):
             status = item.note_data['task_status']
@@ -1063,7 +1079,8 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget = QTextEdit()
         
         # Add task marker to the editing content if it's a task
-        content = item.note_data['content']
+        # Remove any padding newlines that were added for display
+        content = item.remove_padding_newlines(item.note_data['content'])
         task_prefix = ""
         if item.note_data.get('task_status'):
             status = item.note_data['task_status']
