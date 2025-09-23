@@ -322,6 +322,10 @@ class EditableTreeItem(QTreeWidgetItem):
         
         self.setText(0, display_text)
         
+        # Trigger size recalculation for proper wrapping
+        if self.treeWidget():
+            self.treeWidget().scheduleDelayedItemsLayout()
+        
         # Apply color styling - blue for notes with images, default for others
         if has_images:
             # Set blue color for notes containing images
@@ -340,6 +344,44 @@ class EditableTreeItem(QTreeWidgetItem):
             font = self.font(0)
             font.setStrikeOut(False)
             self.setFont(0, font)
+    
+    def sizeHint(self, column):
+        """Calculate proper size hint based on wrapped text content"""
+        if column != 0:
+            return super().sizeHint(column)
+        
+        # Get the tree widget to calculate available width
+        tree_widget = self.treeWidget()
+        if not tree_widget:
+            return super().sizeHint(column)
+        
+        # Get available width (subtract some padding and decoration space)
+        available_width = tree_widget.columnWidth(0) - 60  # Leave room for tree decorations
+        if available_width <= 0:
+            available_width = 200  # Fallback width
+        
+        # Calculate text height based on content and available width
+        text = self.text(0)
+        if not text:
+            return super().sizeHint(column)
+        
+        # Use QTextDocument to calculate wrapped text height
+        from PyQt6.QtGui import QTextDocument, QFontMetrics
+        font = self.font(0)
+        font_metrics = QFontMetrics(font)
+        
+        doc = QTextDocument()
+        doc.setDefaultFont(font)
+        doc.setTextWidth(available_width)
+        doc.setPlainText(text)
+        
+        # Calculate height with some padding
+        text_height = int(doc.size().height()) + 8  # Add padding
+        min_height = font_metrics.height() + 8  # Minimum height for single line
+        
+        height = max(text_height, min_height)
+        
+        return QSize(available_width, height)
 
 class NoteTreeWidget(QTreeWidget):
     def __init__(self, db_manager):
@@ -354,13 +396,16 @@ class NoteTreeWidget(QTreeWidget):
         self.setHeaderLabels(["Notes"])
         self.setRootIsDecorated(True)
         self.setItemsExpandable(True)
+        self.setWordWrap(True)  # Enable word wrapping for long text
+        self.setUniformRowHeights(False)  # Allow variable row heights for wrapped text
+        self.setTextElideMode(Qt.TextElideMode.ElideNone)  # Don't elide text, let it wrap instead
         
         # Add subtle borders around items
         self.setStyleSheet("""
             QTreeWidget::item {
                 border: 1px dotted #f0f0f0;
                 border-radius: 3px;
-                padding: 2px;
+                padding: 4px;
                 margin: 1px;
             }
             QTreeWidget::item:selected {
@@ -1086,15 +1131,20 @@ class NoteTreeWidget(QTreeWidget):
             else:
                 new_content = full_content
             
-            # Parse and extract priority and dates from content
-            parsed_content, priority, start_date, due_date = self.parse_note_content(new_content)
-            
-            # Save parsed content to database
-            self.db.update_note(self.editing_item.note_id, parsed_content)
-            
-            # Update task fields if this note is a task and we found parsed values
-            if self.editing_item.note_data.get('task_status') and (priority is not None or start_date or due_date):
-                self.update_parsed_task_fields(self.editing_item.note_id, priority, start_date, due_date)
+            # Only parse priority and dates if this is a task
+            if self.editing_item.note_data.get('task_status'):
+                # Parse and extract priority and dates from content
+                parsed_content, priority, start_date, due_date = self.parse_note_content(new_content)
+                
+                # Save parsed content to database
+                self.db.update_note(self.editing_item.note_id, parsed_content)
+                
+                # Update task fields if we found parsed values
+                if priority is not None or start_date or due_date:
+                    self.update_parsed_task_fields(self.editing_item.note_id, priority, start_date, due_date)
+            else:
+                # For regular notes, just save the content as-is without parsing
+                self.db.update_note(self.editing_item.note_id, new_content)
             
             # Update item with fresh data from database (includes updated modified_at)
             updated_note_data = self.db.get_note(self.editing_item.note_id)
@@ -1154,12 +1204,14 @@ class NoteTreeWidget(QTreeWidget):
                 parsed_due = parse_natural_date(due_text)
                 if parsed_due:
                     due_date = parsed_due.isoformat()
-                    # Remove the "due ..." part from text
+                    # Remove the "due ..." part from text ONLY if parsing succeeded
                     remaining_text = remaining_text[:due_match.start()] + remaining_text[due_match.end():]
                     remaining_text = remaining_text.strip()
                     print(f"Parsed due date: '{due_text}' -> {due_date}")
+                else:
+                    print(f"Could not parse due date '{due_text}' - keeping original text")
             except Exception as e:
-                print(f"Failed to parse due date '{due_text}': {e}")
+                print(f"Failed to parse due date '{due_text}': {e} - keeping original text")
         
         # 3. Check for start date pattern (start ...)
         start_match = re.search(r'\bstart\s+(.+?)(?=\s+due\s|\s*$)', remaining_text, re.IGNORECASE | re.DOTALL)
@@ -1169,12 +1221,14 @@ class NoteTreeWidget(QTreeWidget):
                 parsed_start = parse_natural_date(start_text)
                 if parsed_start:
                     start_date = parsed_start.isoformat()
-                    # Remove the "start ..." part from text
+                    # Remove the "start ..." part from text ONLY if parsing succeeded
                     remaining_text = remaining_text[:start_match.start()] + remaining_text[start_match.end():]
                     remaining_text = remaining_text.strip()
                     print(f"Parsed start date: '{start_text}' -> {start_date}")
+                else:
+                    print(f"Could not parse start date '{start_text}' - keeping original text")
             except Exception as e:
-                print(f"Failed to parse start date '{start_text}': {e}")
+                print(f"Failed to parse start date '{start_text}': {e} - keeping original text")
         
         # Clean up extra whitespace while preserving newlines
         # Split by lines, clean each line individually, then rejoin with newlines
@@ -2487,6 +2541,15 @@ class MainWindow(QMainWindow):
         
         # Register initial user activity
         self.keep_awake_manager.user_activity()
+        
+        # Initialize task reminder system
+        self.reminder_notifications = []  # Track active reminder notifications
+        self.reminder_timer = QTimer()
+        self.reminder_timer.timeout.connect(self.check_task_reminders)
+        self.reminder_timer.start(60000)  # Check every minute
+        
+        # Check reminders on startup
+        QTimer.singleShot(5000, self.check_task_reminders)  # Wait 5 seconds after startup
     
     def eventFilter(self, obj, event):
         """Track user activity for keep-awake functionality"""
@@ -2705,14 +2768,25 @@ class MainWindow(QMainWindow):
                 elif note['task_status'] == 'active':
                     content = "☐ " + content
             
-            # Format time
+            # Format time (convert from UTC to local time)
             activity_time = note['activity_time']
             try:
+                # Parse the ISO timestamp and convert to local time
+                from datetime import datetime, timezone
                 if 'T' in activity_time:
-                    time_part = activity_time.split('T')[1].split('.')[0]  # Get HH:MM:SS
-                    time_part = time_part[:5]  # Just HH:MM
+                    # Full ISO format: 2023-12-25T10:30:45
+                    if activity_time.endswith('Z'):
+                        utc_dt = datetime.fromisoformat(activity_time.replace('Z', '+00:00'))
+                    else:
+                        # Assume UTC if no timezone specified (SQLite CURRENT_TIMESTAMP)
+                        utc_dt = datetime.fromisoformat(activity_time).replace(tzinfo=timezone.utc)
                 else:
-                    time_part = activity_time[-8:-3]  # Last 5 chars should be HH:MM
+                    # Just date: 2023-12-25 10:30:45
+                    utc_dt = datetime.fromisoformat(activity_time).replace(tzinfo=timezone.utc)
+                
+                # Convert to local time
+                local_dt = utc_dt.astimezone()
+                time_part = local_dt.strftime('%H:%M')
             except:
                 time_part = "--:--"
             
@@ -3980,7 +4054,7 @@ class MainWindow(QMainWindow):
                         dt = dt.replace(tzinfo=timezone.utc)
                     # Convert to local time
                     local_dt = dt.astimezone()
-                    created = local_dt.strftime('%m/%d/%Y %I:%M %p')
+                    created = local_dt.strftime('%a %m/%d/%Y %I:%M %p')
                 except:
                     # Fallback to simple format if parsing fails
                     created = created.replace('T', ' ').split('.')[0]
@@ -3997,7 +4071,7 @@ class MainWindow(QMainWindow):
                         dt = dt.replace(tzinfo=timezone.utc)
                     # Convert to local time
                     local_dt = dt.astimezone()
-                    modified = local_dt.strftime('%m/%d/%Y %I:%M %p')
+                    modified = local_dt.strftime('%a %m/%d/%Y %I:%M %p')
                 except:
                     # Fallback to simple format if parsing fails
                     modified = modified.replace('T', ' ').split('.')[0]
@@ -4025,11 +4099,11 @@ class MainWindow(QMainWindow):
                         # If no timezone info, assume it's local time
                         if dt.tzinfo is None:
                             # Display as local time
-                            self.detail_start_date.setText(dt.strftime('%m/%d/%Y %I:%M %p'))
+                            self.detail_start_date.setText(dt.strftime('%a %m/%d/%Y %I:%M %p'))
                         else:
                             # Convert to local time
                             local_dt = dt.astimezone()
-                            self.detail_start_date.setText(local_dt.strftime('%m/%d/%Y %I:%M %p'))
+                            self.detail_start_date.setText(local_dt.strftime('%a %m/%d/%Y %I:%M %p'))
                     except:
                         self.detail_start_date.setText(start_date)
                 else:
@@ -4042,11 +4116,11 @@ class MainWindow(QMainWindow):
                         # If no timezone info, assume it's local time
                         if dt.tzinfo is None:
                             # Display as local time
-                            self.detail_due_date.setText(dt.strftime('%m/%d/%Y %I:%M %p'))
+                            self.detail_due_date.setText(dt.strftime('%a %m/%d/%Y %I:%M %p'))
                         else:
                             # Convert to local time
                             local_dt = dt.astimezone()
-                            self.detail_due_date.setText(local_dt.strftime('%m/%d/%Y %I:%M %p'))
+                            self.detail_due_date.setText(local_dt.strftime('%a %m/%d/%Y %I:%M %p'))
                     except:
                         self.detail_due_date.setText(due_date)
                 else:
@@ -4063,7 +4137,7 @@ class MainWindow(QMainWindow):
                             dt = dt.replace(tzinfo=timezone.utc)
                         # Convert to local time
                         local_dt = dt.astimezone()
-                        self.detail_completed_at.setText(local_dt.strftime('%m/%d/%Y %I:%M %p'))
+                        self.detail_completed_at.setText(local_dt.strftime('%a %m/%d/%Y %I:%M %p'))
                     except:
                         # Fallback to simple format if parsing fails
                         self.detail_completed_at.setText(completed_at.replace('T', ' ').split('.')[0])
@@ -4585,6 +4659,7 @@ class MainWindow(QMainWindow):
         
         now = datetime.now()
         week_from_now = now + timedelta(days=7)
+        day_from_now = now + timedelta(days=1)
         
         # Categorize tasks
         in_progress = []
@@ -4593,23 +4668,56 @@ class MainWindow(QMainWindow):
         
         for task in raw_tasks:
             start_date = task['start_date']
+            due_date = task['due_date']
+            effective_start_date = None
+            
+            # Check if task should be in progress due to being due soon (within 1 day)
+            if not start_date and due_date:
+                try:
+                    due_dt = datetime.fromisoformat(due_date)
+                    if due_dt <= day_from_now:
+                        # Task is due within 1 day - treat as in progress
+                        task_dict = dict(task)
+                        task_dict['category'] = 'In Progress'
+                        in_progress.append(task_dict)
+                        continue
+                except:
+                    pass  # Fall through to normal categorization
             
             if start_date:
+                # Use actual start date
+                effective_start_date = start_date
+            elif due_date:
+                # No start date but has due date - calculate implied start date
+                # Set implied start date as halfway between now and due date
                 try:
-                    start_dt = datetime.fromisoformat(start_date)
+                    due_dt = datetime.fromisoformat(due_date)
+                    # Calculate halfway point between now and due date
+                    time_diff = due_dt - now
+                    halfway_point = now + (time_diff / 2)
+                    effective_start_date = halfway_point.isoformat()
+                except:
+                    effective_start_date = None
+            
+            if effective_start_date:
+                try:
+                    start_dt = datetime.fromisoformat(effective_start_date)
+                    task_dict = dict(task)
+                    
+                    # Store the calculated start date for sorting purposes
+                    if not start_date and due_date:
+                        task_dict['calculated_start_date'] = effective_start_date
+                    
                     if start_dt <= now:
                         # Task is in progress (start date has passed)
-                        task_dict = dict(task)
                         task_dict['category'] = 'In Progress'
                         in_progress.append(task_dict)
                     elif start_dt <= week_from_now:
                         # Task is upcoming (starts within a week)
-                        task_dict = dict(task)
                         task_dict['category'] = 'Upcoming'
                         upcoming.append(task_dict)
                     else:
                         # Task starts more than a week away
-                        task_dict = dict(task)
                         task_dict['category'] = 'Future'
                         misc.append(task_dict)
                 except:
@@ -4618,7 +4726,7 @@ class MainWindow(QMainWindow):
                     task_dict['category'] = 'Misc'
                     misc.append(task_dict)
             else:
-                # No start date
+                # No start date or due date
                 task_dict = dict(task)
                 task_dict['category'] = 'Misc'
                 misc.append(task_dict)
@@ -4634,15 +4742,18 @@ class MainWindow(QMainWindow):
             # Priority 0 (None) should be at the bottom, then ascending priority (lower numbers = higher priority)
             priority_sort = (1 if priority == 0 else 0, priority if priority != 0 else 999)
             
-            # Start date sorting (for Upcoming and Future categories when same priority)
-            if category in ['Upcoming', 'Future'] and start_date:
+            # Start date sorting (for Upcoming, Future, and In Progress categories)
+            # Use calculated start date if available, otherwise use actual start date
+            effective_start = task.get('calculated_start_date') or start_date
+            
+            if category in ['Upcoming', 'Future', 'In Progress'] and effective_start:
                 try:
-                    start_dt = datetime.fromisoformat(start_date)
+                    start_dt = datetime.fromisoformat(effective_start)
                     start_sort = (0, start_dt)
                 except:
                     start_sort = (1, datetime.max)
             else:
-                start_sort = (1, datetime.max)  # No start date influence for other categories
+                start_sort = (1, datetime.max)  # No start date influence for misc category
             
             # Due date sorting (None dates go to end)
             if due_date:
@@ -4657,8 +4768,13 @@ class MainWindow(QMainWindow):
             # Content for tie-breaking
             content_sort = content.lower()
             
-            # Return sort key: priority first, then start date (for upcoming/future), then due date, then content
-            return (priority_sort, start_sort, due_sort, content_sort)
+            # Different sort order based on category
+            if category == 'In Progress':
+                # For in-progress tasks: priority, then due date, then start date, then content
+                return (priority_sort, due_sort, start_sort, content_sort)
+            else:
+                # For upcoming/future/misc tasks: priority, then start date, then due date, then content
+                return (priority_sort, start_sort, due_sort, content_sort)
         
         # Sort each category
         in_progress.sort(key=smart_sort_key)
@@ -5396,11 +5512,213 @@ class MainWindow(QMainWindow):
             self.find_and_select_note(note_id)
             self.status_bar.showMessage(f"Navigated to note {note_id}", 2000)
     
+    def check_task_reminders(self):
+        """Check for tasks that need reminders (due within 24 hours)"""
+        try:
+            from datetime import datetime, timedelta
+            
+            # Get all active tasks
+            with sqlite3.connect(self.db.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date
+                    FROM notes n
+                    JOIN tasks t ON n.id = t.note_id
+                    WHERE t.status = 'active' AND t.due_date IS NOT NULL
+                """)
+                tasks = [dict(row) for row in cursor.fetchall()]
+            
+            now = datetime.now()
+            reminder_threshold = now + timedelta(hours=24)
+            
+            for task in tasks:
+                due_date = task.get('due_date')
+                if not due_date:
+                    continue
+                
+                try:
+                    due_dt = datetime.fromisoformat(due_date)
+                    # Check if task is due within 24 hours and not already reminded
+                    if now <= due_dt <= reminder_threshold:
+                        task_id = task['id']
+                        # Check if we already have a notification for this task
+                        if not any(notif.task_id == task_id for notif in self.reminder_notifications):
+                            self.show_task_reminder(task)
+                            
+                except Exception as e:
+                    print(f"Error parsing due date for task {task['id']}: {e}")
+                    
+        except Exception as e:
+            print(f"Error checking task reminders: {e}")
+    
+    def show_task_reminder(self, task):
+        """Show a subtle reminder notification for a task"""
+        notification = TaskReminderNotification(task, self)
+        notification.dismissed.connect(lambda: self.remove_reminder_notification(notification))
+        self.reminder_notifications.append(notification)
+        notification.show()
+        notification.position_in_corner()
+    
+    def remove_reminder_notification(self, notification):
+        """Remove a reminder notification from tracking"""
+        if notification in self.reminder_notifications:
+            self.reminder_notifications.remove(notification)
+    
     def closeEvent(self, event):
         """Handle application closing"""
+        # Remove event filter from application
+        QApplication.instance().removeEventFilter(self)
+        
+        # Clean up reminder notifications
+        if hasattr(self, 'reminder_timer'):
+            self.reminder_timer.stop()
+        for notification in getattr(self, 'reminder_notifications', []):
+            notification.close()
+        
+        if hasattr(self, 'keep_awake_manager'):
+            self.keep_awake_manager.cleanup()
+            
         if self.tree_widget.editing_item:
             self.tree_widget.finish_editing()
         event.accept()
+
+
+class TaskReminderNotification(QWidget):
+    """Subtle task reminder notification widget"""
+    
+    dismissed = pyqtSignal()
+    
+    def __init__(self, task, parent=None):
+        super().__init__(parent)
+        self.task = task
+        self.task_id = task['id']
+        self.parent_window = parent
+        
+        # Configure window
+        self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setFixedSize(300, 80)
+        
+        # Create layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Create main container with background
+        container = QWidget()
+        container.setStyleSheet("""
+            QWidget {
+                background-color: rgba(255, 248, 220, 240);
+                border: 1px solid #ddd;
+                border-radius: 8px;
+            }
+        """)
+        container_layout = QVBoxLayout(container)
+        container_layout.setContentsMargins(10, 8, 10, 8)
+        
+        # Title
+        title_label = QLabel("📅 Task Due Soon")
+        title_label.setStyleSheet("font-weight: bold; color: #666; font-size: 11px;")
+        container_layout.addWidget(title_label)
+        
+        # Task content
+        content = task['content'][:40] + "..." if len(task['content']) > 40 else task['content']
+        content_label = QLabel(content)
+        content_label.setStyleSheet("color: #333; font-size: 12px;")
+        content_label.setWordWrap(True)
+        container_layout.addWidget(content_label)
+        
+        # Due date info
+        try:
+            from datetime import datetime
+            due_dt = datetime.fromisoformat(task['due_date'])
+            now = datetime.now()
+            time_diff = due_dt - now
+            
+            if time_diff.total_seconds() < 3600:  # Less than 1 hour
+                time_str = f"Due in {int(time_diff.total_seconds() / 60)} minutes"
+            else:  # Less than 24 hours
+                time_str = f"Due in {int(time_diff.total_seconds() / 3600)} hours"
+                
+        except:
+            time_str = "Due soon"
+        
+        due_label = QLabel(time_str)
+        due_label.setStyleSheet("color: #888; font-size: 10px; font-style: italic;")
+        container_layout.addWidget(due_label)
+        
+        # Buttons layout
+        button_layout = QHBoxLayout()
+        button_layout.setContentsMargins(0, 5, 0, 0)
+        
+        # View button
+        view_btn = QPushButton("View")
+        view_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a90e2;
+                color: white;
+                border: none;
+                border-radius: 3px;
+                padding: 4px 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover {
+                background-color: #357abd;
+            }
+        """)
+        view_btn.clicked.connect(self.view_task)
+        button_layout.addWidget(view_btn)
+        
+        button_layout.addStretch()
+        
+        # Dismiss button
+        dismiss_btn = QPushButton("✕")
+        dismiss_btn.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #999;
+                border: none;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #f0f0f0;
+                color: #666;
+            }
+        """)
+        dismiss_btn.clicked.connect(self.dismiss)
+        button_layout.addWidget(dismiss_btn)
+        
+        container_layout.addLayout(button_layout)
+        layout.addWidget(container)
+    
+    def position_in_corner(self):
+        """Position the notification in the bottom-right corner of the parent window"""
+        if self.parent_window:
+            parent_rect = self.parent_window.geometry()
+            x = parent_rect.right() - self.width() - 20
+            y = parent_rect.bottom() - self.height() - 20
+            self.move(x, y)
+        else:
+            # Fallback to screen corner
+            screen = QApplication.primaryScreen().geometry()
+            x = screen.width() - self.width() - 20
+            y = screen.height() - self.height() - 100
+            self.move(x, y)
+    
+    def view_task(self):
+        """Navigate to the task and dismiss notification"""
+        if self.parent_window:
+            self.parent_window.find_and_select_note(self.task_id)
+            self.parent_window.raise_()
+            self.parent_window.activateWindow()
+        self.dismiss()
+    
+    def dismiss(self):
+        """Dismiss the notification"""
+        self.dismissed.emit()
+        self.close()
+
 
 def main():
     app = QApplication(sys.argv)
