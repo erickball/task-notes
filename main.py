@@ -934,24 +934,17 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget.setPlainText(f"{task_prefix}{content}")
         self.task_prefix_length = len(task_prefix)  # Store for later when saving
         
-        # Match the tree widget's font and styling
+        # Match the tree widget's font and styling exactly
         self.edit_widget.setFont(self.font())
         self.edit_widget.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_widget.setFrameStyle(0)  # No frame
+        self.edit_widget.document().setDocumentMargin(0)
         
-        # Adjust margins and padding to match tree widget
-        self.edit_widget.document().setDocumentMargin(0)  # No margin to match tree
+        # Calculate text rectangle accounting for tree widget decorations
+        text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
         
-        # Adjust geometry to match tree widget styling exactly
-        # CSS has: border(1px) + margin(1px) + padding(2px) = 4px total offset
-        adjusted_rect = QRect(rect)
-        adjusted_rect.setX(rect.x() + 4)  # border + margin + padding
-        adjusted_rect.setY(rect.y() + 4)  # border + margin + padding  
-        adjusted_rect.setWidth(rect.width() - 8)  # Account for both sides (4px each)
-        adjusted_rect.setHeight(rect.height() - 8)  # Account for both sides (4px each)
-        
-        self.edit_widget.setGeometry(adjusted_rect)
+        self.edit_widget.setGeometry(text_rect)
         self.edit_widget.setParent(self.viewport())
         self.edit_widget.show()
         self.edit_widget.setFocus()
@@ -960,11 +953,8 @@ class NoteTreeWidget(QTreeWidget):
         if click_pos is not None:
             # Use a timer to set cursor position after the widget is fully initialized
             def set_cursor():
-                # Adjust click position for the geometry changes
-                local_pos = click_pos - rect.topLeft()  # Use original rect
-                # Account for the CSS padding/border adjustments
-                local_pos.setX(local_pos.x() - 4)  # Adjust for border + padding
-                local_pos.setY(local_pos.y() - 2)  # Adjust for border + padding
+                # Adjust click position for the text rectangle offset
+                local_pos = click_pos - text_rect.topLeft()
                 cursor = self.edit_widget.cursorForPosition(local_pos)
                 self.edit_widget.setTextCursor(cursor)
             
@@ -1009,16 +999,10 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_widget.setFrameStyle(0)  # No frame
         
-        # Adjust margins and padding to match tree widget
-        self.edit_widget.document().setDocumentMargin(0)  # No margin to match tree
-        
-        # Adjust geometry to match tree widget styling exactly
-        # CSS has: border(1px) + margin(1px) + padding(2px) = 4px total offset
-        adjusted_rect = QRect(rect)
-        adjusted_rect.setX(rect.x() + 4)  # border + margin + padding
-        adjusted_rect.setY(rect.y() + 4)  # border + margin + padding  
-        adjusted_rect.setWidth(rect.width() - 8)  # Account for both sides (4px each)
-        adjusted_rect.setHeight(rect.height() - 8)  # Account for both sides (4px each)
+        # Calculate text rectangle accounting for tree widget decorations
+        text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
+        self.edit_widget.setGeometry(text_rect)
+        self.edit_widget.document().setDocumentMargin(0)
         
         self.edit_widget.setGeometry(adjusted_rect)
         self.edit_widget.setParent(self.viewport())
@@ -1100,16 +1084,10 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.edit_widget.setFrameStyle(0)  # No frame
         
-        # Adjust margins and padding to match tree widget
-        self.edit_widget.document().setDocumentMargin(0)  # No margin to match tree
-        
-        # Adjust geometry to match tree widget styling exactly
-        # CSS has: border(1px) + margin(1px) + padding(2px) = 4px total offset
-        adjusted_rect = QRect(rect)
-        adjusted_rect.setX(rect.x() + 4)  # border + margin + padding
-        adjusted_rect.setY(rect.y() + 4)  # border + margin + padding  
-        adjusted_rect.setWidth(rect.width() - 8)  # Account for both sides (4px each)
-        adjusted_rect.setHeight(rect.height() - 8)  # Account for both sides (4px each)
+        # Calculate text rectangle accounting for tree widget decorations
+        text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
+        self.edit_widget.setGeometry(text_rect)
+        self.edit_widget.document().setDocumentMargin(0)
         
         self.edit_widget.setGeometry(adjusted_rect)
         self.edit_widget.setParent(self.viewport())
