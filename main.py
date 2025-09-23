@@ -3898,9 +3898,11 @@ class MainWindow(QMainWindow):
         if selected_items:
             note_content = selected_items[0].note_data.get('content', '')
             
-            # Find image file paths in the original content
-            file_path_pattern = r'([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))'
-            image_matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
+            # Find image file paths in the original content (including paths with spaces)
+            file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
+            matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
+            # Extract actual paths from the tuples (either quoted or unquoted)
+            image_matches = [match[0] if match[0] else match[1] for match in matches]
             
             # Check if any image file exists and show the first valid one we find
             # This is a simplified approach - we'll show zoom for any image in the content when clicked
