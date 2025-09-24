@@ -874,13 +874,9 @@ class NoteTreeWidget(QTreeWidget):
         
         # Handle multi-selection
         if modifiers & Qt.KeyboardModifier.ControlModifier:
-            # Ctrl+click toggles selection - finish editing first
+            # Ctrl+click toggles selection - finish editing first but don't start editing
             if self.editing_item:
                 self.finish_editing()
-            current_selection = item.isSelected()
-            item.setSelected(not current_selection)
-            if not current_selection:
-                self.setCurrentItem(item)
             return
         elif modifiers & Qt.KeyboardModifier.ShiftModifier:
             # Shift+click extends selection - finish editing first
@@ -1295,6 +1291,20 @@ class NoteTreeWidget(QTreeWidget):
         """Handle keyboard shortcuts"""
         key = event.key()
         modifiers = event.modifiers()
+        
+        # Handle Ctrl+C at top level (works in both editing and navigation mode)
+        if key == Qt.Key.Key_C and modifiers & Qt.KeyboardModifier.ControlModifier:
+            # If editing, let the edit widget handle it naturally, but also copy to system clipboard
+            if self.editing_item:
+                # Let default Ctrl+C work for text selection in edit widget
+                super().keyPressEvent(event)
+                # But also copy the note(s) to system clipboard
+                self.copy_selected_notes_to_clipboard()
+                return
+            else:
+                # Navigation mode - copy selected notes
+                self.copy_notes()
+                return
         
         # Handle Tab/Shift+Tab
         if key == Qt.Key.Key_Tab:
@@ -2067,26 +2077,11 @@ class NoteTreeWidget(QTreeWidget):
         return False
     
     def mousePressEvent(self, event):
-        """Handle mouse press events for better multi-selection and cursor positioning"""
-        item = self.itemAt(event.pos())
+        """Handle mouse press events for cursor positioning"""
+        # Store click position for cursor placement
+        self.last_click_pos = event.pos()
         
-        if isinstance(item, EditableTreeItem):
-            modifiers = event.modifiers()
-            
-            if modifiers & Qt.KeyboardModifier.ControlModifier:
-                # Ctrl+click - toggle selection without clearing others
-                item.setSelected(not item.isSelected())
-                self.setCurrentItem(item)
-                return
-            elif modifiers & Qt.KeyboardModifier.ShiftModifier:
-                # Shift+click - extend selection (let Qt handle this)
-                super().mousePressEvent(event)
-                return
-            else:
-                # Normal click - store position for cursor placement
-                self.last_click_pos = event.pos()
-        
-        # Normal click - let the regular handler process it
+        # Always let Qt handle the selection behavior first
         super().mousePressEvent(event)
     
     def dropEvent(self, event):
@@ -2259,6 +2254,9 @@ class NoteTreeWidget(QTreeWidget):
         
         self.clipboard_operation = 'cut'
         
+        # Also copy to system clipboard as text
+        self.copy_selected_notes_to_clipboard()
+        
         main_window = self.window()
         if hasattr(main_window, 'status_bar'):
             main_window.status_bar.showMessage(f"Cut {len(selected_items)} note(s)", 2000)
@@ -2270,7 +2268,7 @@ class NoteTreeWidget(QTreeWidget):
         if not selected_items:
             return
         
-        # Store note data for clipboard
+        # Store note data for internal clipboard (for pasting within app)
         self.clipboard_notes = []
         for item in selected_items:
             # Get full note data including children
@@ -2278,6 +2276,9 @@ class NoteTreeWidget(QTreeWidget):
             self.clipboard_notes.append(note_data)
         
         self.clipboard_operation = 'copy'
+        
+        # Also copy to system clipboard as text
+        self.copy_selected_notes_to_clipboard()
         
         main_window = self.window()
         if hasattr(main_window, 'status_bar'):
@@ -2398,6 +2399,101 @@ class NoteTreeWidget(QTreeWidget):
             self.setCurrentItem(parent_item)
         elif self.topLevelItemCount() > 0:
             self.setCurrentItem(self.topLevelItem(0))
+    
+    def copy_selected_notes_to_clipboard(self):
+        """Copy selected notes to system clipboard as text with proper indentation"""
+        selected_items = self.selectedItems()
+        if not selected_items:
+            # If nothing selected, use current item
+            current = self.currentItem()
+            if current:
+                selected_items = [current]
+        
+        if not selected_items:
+            return
+        
+        # Build text content from selected notes with hierarchical structure
+        text_lines = []
+        
+        def get_item_depth(item):
+            """Calculate the depth/indentation level of an item"""
+            depth = 0
+            parent = item.parent()
+            while parent is not None:
+                depth += 1
+                parent = parent.parent()
+            return depth
+        
+        # Sort items by their position in the tree (top to bottom)
+        sorted_items = []
+        for item in selected_items:
+            if isinstance(item, EditableTreeItem):
+                sorted_items.append(item)
+        
+        # Sort by visual tree order (top to bottom as they appear in the tree)
+        def get_visual_position(item):
+            """Get the visual position of an item in the tree"""
+            # Find the top-level item this belongs to
+            top_item = item
+            while top_item.parent() is not None:
+                top_item = top_item.parent()
+            
+            # Get the index of the top-level item
+            tree_widget = item.treeWidget()
+            top_index = tree_widget.indexOfTopLevelItem(top_item)
+            
+            # Build path from root including positions at each level
+            path = [top_index]
+            current = item
+            
+            # Build the path from bottom to top
+            path_parts = []
+            while current is not None:
+                if current.parent() is not None:
+                    parent = current.parent()
+                    index = parent.indexOfChild(current)
+                    path_parts.insert(0, index)
+                current = current.parent()
+            
+            return tuple(path + path_parts)
+        
+        sorted_items.sort(key=get_visual_position)
+        
+        for item in sorted_items:
+            content = item.note_data.get('content', '').strip()
+            if content:
+                # Calculate indentation level
+                depth = get_item_depth(item)
+                indent = "  " * depth  # 2 spaces per level
+                
+                # Add task prefix if it's a task
+                if item.note_data.get('task_status'):
+                    status = item.note_data['task_status']
+                    if status == 'complete':
+                        content = f"☑ {content}"
+                    elif status == 'active':
+                        content = f"☐ {content}"
+                    elif status == 'cancelled':
+                        content = f"✗ {content}"
+                
+                # Apply indentation to each line of the content
+                indented_lines = []
+                for line in content.split('\n'):
+                    indented_lines.append(f"{indent}{line}")
+                
+                text_lines.append('\n'.join(indented_lines))
+        
+        if text_lines:
+            # Join all selected notes with single newlines to maintain hierarchy
+            clipboard_text = '\n'.join(text_lines)
+            
+            # Copy to system clipboard
+            clipboard = QApplication.clipboard()
+            clipboard.setText(clipboard_text)
+            
+            # Show feedback (optional)
+            count = len(text_lines)
+            print(f"Copied {count} note{'s' if count != 1 else ''} to clipboard")
 
 class MainWindow(QMainWindow):
     def __init__(self):
