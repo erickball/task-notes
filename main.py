@@ -999,8 +999,6 @@ class NoteTreeWidget(QTreeWidget):
         text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
         self.edit_widget.setGeometry(text_rect)
         self.edit_widget.document().setDocumentMargin(0)
-        
-        self.edit_widget.setGeometry(adjusted_rect)
         self.edit_widget.setParent(self.viewport())
         self.edit_widget.show()
         self.edit_widget.setFocus()
@@ -1084,8 +1082,6 @@ class NoteTreeWidget(QTreeWidget):
         text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
         self.edit_widget.setGeometry(text_rect)
         self.edit_widget.document().setDocumentMargin(0)
-        
-        self.edit_widget.setGeometry(adjusted_rect)
         self.edit_widget.setParent(self.viewport())
         self.edit_widget.show()
         self.edit_widget.setFocus()
