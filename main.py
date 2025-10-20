@@ -2631,6 +2631,8 @@ class MainWindow(QMainWindow):
         
         # Initialize task reminder system
         self.reminder_notifications = []  # Track active reminder notifications
+        self.dismissed_reminders = set()  # Track dismissed task IDs (cleared daily)
+        self.last_reminder_reset = datetime.now().date()  # Track when we last reset dismissed reminders
         self.reminder_timer = QTimer()
         self.reminder_timer.timeout.connect(self.check_task_reminders)
         self.reminder_timer.start(60000)  # Check every minute
@@ -5603,7 +5605,13 @@ class MainWindow(QMainWindow):
         """Check for tasks that need reminders (due within 24 hours)"""
         try:
             from datetime import datetime, timedelta
-            
+
+            # Reset dismissed reminders list daily
+            today = datetime.now().date()
+            if today > self.last_reminder_reset:
+                self.dismissed_reminders.clear()
+                self.last_reminder_reset = today
+
             # Get all active tasks
             with sqlite3.connect(self.db.db_path) as conn:
                 conn.row_factory = sqlite3.Row
@@ -5614,27 +5622,28 @@ class MainWindow(QMainWindow):
                     WHERE t.status = 'active' AND t.due_date IS NOT NULL
                 """)
                 tasks = [dict(row) for row in cursor.fetchall()]
-            
+
             now = datetime.now()
             reminder_threshold = now + timedelta(hours=24)
-            
+
             for task in tasks:
                 due_date = task.get('due_date')
                 if not due_date:
                     continue
-                
+
                 try:
                     due_dt = datetime.fromisoformat(due_date)
                     # Check if task is due within 24 hours and not already reminded
                     if now <= due_dt <= reminder_threshold:
                         task_id = task['id']
-                        # Check if we already have a notification for this task
-                        if not any(notif.task_id == task_id for notif in self.reminder_notifications):
+                        # Check if we already have a notification for this task OR it was dismissed
+                        if (task_id not in self.dismissed_reminders and
+                            not any(notif.task_id == task_id for notif in self.reminder_notifications)):
                             self.show_task_reminder(task)
-                            
+
                 except Exception as e:
                     print(f"Error parsing due date for task {task['id']}: {e}")
-                    
+
         except Exception as e:
             print(f"Error checking task reminders: {e}")
     
@@ -5647,9 +5656,11 @@ class MainWindow(QMainWindow):
         notification.position_in_corner()
     
     def remove_reminder_notification(self, notification):
-        """Remove a reminder notification from tracking"""
+        """Remove a reminder notification from tracking and mark as dismissed"""
         if notification in self.reminder_notifications:
             self.reminder_notifications.remove(notification)
+            # Mark this task as dismissed so it won't show again today
+            self.dismissed_reminders.add(notification.task_id)
     
     def closeEvent(self, event):
         """Handle application closing"""
