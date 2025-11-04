@@ -1107,25 +1107,29 @@ class NoteTreeWidget(QTreeWidget):
         """Finish editing and save changes"""
         if not self.editing_item or not self.edit_widget:
             return
-        
+
         try:
             full_content = self.edit_widget.toPlainText()
-            
+
             # Remove task prefix if it exists
             task_prefix_len = getattr(self, 'task_prefix_length', 0)
             if task_prefix_len > 0:
                 new_content = full_content[task_prefix_len:]
             else:
                 new_content = full_content
-            
+
             # Only parse priority and dates if this is a task
             if self.editing_item.note_data.get('task_status'):
+                # Check if content actually changed (before parsing) to detect whitespace-only changes
+                stored_content = self.editing_item.note_data.get('content', '')
+                content_changed = (new_content != stored_content)
+
                 # Parse and extract priority and dates from content
                 parsed_content, priority, start_date, due_date = self.parse_note_content(new_content)
-                
-                # Save parsed content to database
-                self.db.update_note(self.editing_item.note_id, parsed_content)
-                
+
+                # Save parsed content to database, forcing update if original content changed
+                self.db.update_note(self.editing_item.note_id, parsed_content, force_update=content_changed)
+
                 # Update task fields if we found parsed values
                 if priority is not None or start_date or due_date:
                     self.update_parsed_task_fields(self.editing_item.note_id, priority, start_date, due_date)
