@@ -1120,15 +1120,11 @@ class NoteTreeWidget(QTreeWidget):
 
             # Only parse priority and dates if this is a task
             if self.editing_item.note_data.get('task_status'):
-                # Check if content actually changed (before parsing) to detect whitespace-only changes
-                stored_content = self.editing_item.note_data.get('content', '')
-                content_changed = (new_content != stored_content)
-
                 # Parse and extract priority and dates from content
                 parsed_content, priority, start_date, due_date = self.parse_note_content(new_content)
 
-                # Save parsed content to database, forcing update if original content changed
-                self.db.update_note(self.editing_item.note_id, parsed_content, force_update=content_changed)
+                # Save parsed content to database
+                self.db.update_note(self.editing_item.note_id, parsed_content)
 
                 # Update task fields if we found parsed values
                 if priority is not None or start_date or due_date:
@@ -1220,18 +1216,9 @@ class NoteTreeWidget(QTreeWidget):
                     print(f"Could not parse start date '{start_text}' - keeping original text")
             except Exception as e:
                 print(f"Failed to parse start date '{start_text}': {e} - keeping original text")
-        
-        # Clean up extra whitespace while preserving newlines
-        # Split by lines, clean each line individually, then rejoin with newlines
-        lines = remaining_text.split('\n')
-        cleaned_lines = []
-        for line in lines:
-            # Clean each line individually (removes extra spaces but preserves the line structure)
-            cleaned_line = ' '.join(line.split())
-            cleaned_lines.append(cleaned_line)
-        cleaned_content = '\n'.join(cleaned_lines)
-        
-        return cleaned_content, priority, start_date, due_date
+
+        # Return remaining text with whitespace preserved
+        return remaining_text, priority, start_date, due_date
     
     def update_parsed_task_fields(self, note_id, priority, start_date, due_date):
         """Update task fields with parsed values from note content"""

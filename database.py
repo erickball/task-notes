@@ -298,24 +298,17 @@ class DatabaseManager:
             
             return note_id
     
-    def update_note(self, note_id: int, content: str, force_update: bool = False):
-        """Update note content
-
-        Args:
-            note_id: The ID of the note to update
-            content: The new content for the note
-            force_update: If True, skip the change check and always update
-        """
-        # Check if content actually changed (unless force_update is True)
+    def update_note(self, note_id: int, content: str):
+        """Update note content"""
+        # First check if content actually changed
         with sqlite3.connect(self.db_path) as conn:
-            if not force_update:
-                cursor = conn.execute("SELECT content FROM notes WHERE id = ?", (note_id,))
-                row = cursor.fetchone()
-                if row and row[0] == content:
-                    # No change, don't update or commit
-                    return
+            cursor = conn.execute("SELECT content FROM notes WHERE id = ?", (note_id,))
+            row = cursor.fetchone()
+            if row and row[0] == content:
+                # No change, don't update or commit
+                return
 
-            # Content changed (or force_update=True), update it
+            # Content changed, update it
             conn.execute("""
                 UPDATE notes
                 SET content = ?, modified_at = CURRENT_TIMESTAMP
