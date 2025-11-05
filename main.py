@@ -2105,14 +2105,15 @@ class NoteTreeWidget(QTreeWidget):
                 target_parent_id = drop_item.note_id
                 target_position = len(self.db.get_children(drop_item.note_id))  # Add at end
             
-            elif drop_indicator in [QAbstractItemView.DropIndicatorPosition.AboveItem, 
+            elif drop_indicator in [QAbstractItemView.DropIndicatorPosition.AboveItem,
                                    QAbstractItemView.DropIndicatorPosition.BelowItem]:
                 # Dropped ABOVE or BELOW the item - make it a sibling
                 parent_item = drop_item.parent()
                 if parent_item and isinstance(parent_item, EditableTreeItem):
                     # Has a parent in the tree
                     target_parent_id = parent_item.note_id
-                    current_pos = parent_item.indexOfChild(drop_item)
+                    # Use database position instead of tree index to avoid issues during drag
+                    current_pos = drop_item.note_data.get('position', 0)
                     if drop_indicator == QAbstractItemView.DropIndicatorPosition.AboveItem:
                         target_position = current_pos  # Insert before
                     else:
@@ -2120,7 +2121,8 @@ class NoteTreeWidget(QTreeWidget):
                 else:
                     # Top level item - parent is the focused root
                     target_parent_id = self.focused_root_id
-                    current_pos = self.indexOfTopLevelItem(drop_item)
+                    # Use database position instead of tree index
+                    current_pos = drop_item.note_data.get('position', 0)
                     if drop_indicator == QAbstractItemView.DropIndicatorPosition.AboveItem:
                         target_position = current_pos  # Insert before
                     else:
@@ -2144,9 +2146,11 @@ class NoteTreeWidget(QTreeWidget):
         
         # Perform database updates
         try:
-            moved_note_ids = [item.note_id for item in selected_items]
-            
-            for i, item in enumerate(selected_items):
+            # Sort items by tree position to maintain order when moving
+            sorted_items = self.sort_items_by_tree_position(selected_items)
+            moved_note_ids = [item.note_id for item in sorted_items]
+
+            for i, item in enumerate(sorted_items):
                 final_position = target_position + i
                 print(f"Moving note {item.note_id} to parent {target_parent_id}, position {final_position}")
                 self.db.move_note(item.note_id, target_parent_id, final_position)
