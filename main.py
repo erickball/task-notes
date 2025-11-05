@@ -1557,12 +1557,14 @@ class NoteTreeWidget(QTreeWidget):
                     # Find the target parent (previous sibling of the first selected item)
                     first_item = self.sort_items_by_tree_position(selected_items)[0]
                     target_parent = self.get_indent_target_parent(first_item)
-                    
+
                     if target_parent:
-                        # Move all items to the target parent, maintaining order
+                        # Move all items to the target parent at the end, maintaining order
                         sorted_items = self.sort_items_by_tree_position(selected_items)
+                        # Get existing child count to append at the end
+                        base_position = len(self.db.get_children(target_parent.note_id))
                         for i, item in enumerate(sorted_items):
-                            self.db.move_note(item.note_id, target_parent.note_id, i)
+                            self.db.move_note(item.note_id, target_parent.note_id, base_position + i)
                 else:  # Outdenting
                     # Process from last to first for outdenting to preserve order
                     sorted_items = self.sort_items_by_tree_position(selected_items, reverse=True)
@@ -1574,7 +1576,9 @@ class NoteTreeWidget(QTreeWidget):
                 if direction > 0:
                     target_parent = self.get_indent_target_parent(item)
                     if target_parent:
-                        self.db.move_note(item.note_id, target_parent.note_id, 0)
+                        # Add at the end of the target parent's children
+                        target_position = len(self.db.get_children(target_parent.note_id))
+                        self.db.move_note(item.note_id, target_parent.note_id, target_position)
                 else:
                     self.outdent_note_db_only(item)
             
