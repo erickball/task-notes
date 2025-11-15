@@ -573,12 +573,36 @@ class GitVersionControl:
                 # Create initial commit
                 self.commit_changes("Initial commit")
             except pygit2.GitError as init_error:
-                # If we can't initialize git (e.g., permission issues), raise it
-                # The caller should handle this and prompt the user for a different location
+                # If ownership error, try to configure git to trust this directory
+                error_str = str(init_error).lower()
+                if "not owned by current user" in error_str or "ownership" in error_str:
+                    try:
+                        import subprocess
+                        # Add this directory to git's safe.directory list
+                        subprocess.run(
+                            ["git", "config", "--global", "--add", "safe.directory", self.repo_path],
+                            check=True,
+                            capture_output=True
+                        )
+                        # Try again after configuring
+                        self.repo = pygit2.init_repository(self.repo_path)
+                        self.commit_changes("Initial commit")
+                        return  # Success!
+                    except Exception as config_error:
+                        # Configuration failed, continue to error below
+                        pass
+
+                # If we still can't initialize git, raise a helpful error
                 raise RuntimeError(
                     f"Cannot initialize git repository at {self.repo_path}.\n\n"
                     f"This location may not support git repositories due to permission or ownership issues.\n"
-                    f"Please choose a different location for your database.\n\n"
+                    f"Common causes:\n"
+                    f"• Sync folders (OneDrive, Dropbox, Google Drive) may have ownership restrictions\n"
+                    f"• Network drives may not support git\n"
+                    f"• Some system folders have special permissions\n\n"
+                    f"You can try:\n"
+                    f"• Choosing a local folder (like Documents\\MyNotes)\n"
+                    f"• Using a different sync solution after the database is created\n\n"
                     f"Error: {init_error}"
                 ) from init_error
     
