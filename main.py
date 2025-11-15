@@ -3733,7 +3733,6 @@ class MainWindow(QMainWindow):
         self.detail_content.setMaximumHeight(200)  # Increased height to accommodate images
         self.detail_content.setReadOnly(True)
         self.detail_content.setAcceptRichText(True)  # Enable HTML/rich text support
-        self.detail_content.setOpenExternalLinks(False)  # Handle links manually
         # Connect click events to handle link clicks and image zoom
         self.detail_content.mousePressEvent = self.handle_detail_content_click
         layout.addWidget(self.detail_content)
