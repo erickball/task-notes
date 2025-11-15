@@ -561,50 +561,97 @@ class GitVersionControl:
     
     def init_repo(self):
         """Initialize git repository if it doesn't exist"""
-        try:
-            # Try to open existing repo
-            self.repo = pygit2.Repository(self.repo_path)
-            # Rebuild undo stack from existing git history
-            self._rebuild_undo_stack_from_history()
-        except pygit2.GitError as e:
-            # Try to create new repo
-            try:
-                self.repo = pygit2.init_repository(self.repo_path)
-                # Create initial commit
-                self.commit_changes("Initial commit")
-            except pygit2.GitError as init_error:
-                # If ownership error, try to configure git to trust this directory
-                error_str = str(init_error).lower()
-                if "not owned by current user" in error_str or "ownership" in error_str:
-                    try:
-                        import subprocess
-                        # Add this directory to git's safe.directory list
-                        subprocess.run(
-                            ["git", "config", "--global", "--add", "safe.directory", self.repo_path],
-                            check=True,
-                            capture_output=True
-                        )
-                        # Try again after configuring
-                        self.repo = pygit2.init_repository(self.repo_path)
-                        self.commit_changes("Initial commit")
-                        return  # Success!
-                    except Exception as config_error:
-                        # Configuration failed, continue to error below
-                        pass
+        import os
 
-                # If we still can't initialize git, raise a helpful error
-                raise RuntimeError(
-                    f"Cannot initialize git repository at {self.repo_path}.\n\n"
-                    f"This location may not support git repositories due to permission or ownership issues.\n"
-                    f"Common causes:\n"
-                    f"• Sync folders (OneDrive, Dropbox, Google Drive) may have ownership restrictions\n"
-                    f"• Network drives may not support git\n"
-                    f"• Some system folders have special permissions\n\n"
-                    f"You can try:\n"
-                    f"• Choosing a local folder (like Documents\\MyNotes)\n"
-                    f"• Using a different sync solution after the database is created\n\n"
-                    f"Error: {init_error}"
-                ) from init_error
+        # Check if there's already a .git directory (existing repo)
+        git_dir = os.path.join(self.repo_path, '.git')
+        if os.path.exists(git_dir):
+            # There's already a git repo here - check if it looks like a notes repo
+            try:
+                self.repo = pygit2.Repository(self.repo_path)
+                # Check if notes.db is tracked
+                try:
+                    self.repo.status_file("notes.db")
+                    # It's a notes repo, use it
+                    self._rebuild_undo_stack_from_history()
+                    return
+                except:
+                    # notes.db is not in this repo - this is probably a code repo or something else
+                    raise RuntimeError(
+                        f"The directory {self.repo_path} already contains a git repository.\n\n"
+                        f"To avoid mixing your notes with other files in version control,\n"
+                        f"please create a subfolder for your notes database.\n\n"
+                        f"For example:\n"
+                        f"• Create a 'notes' subfolder in this directory\n"
+                        f"• Choose a different location entirely\n\n"
+                        f"This keeps your notes version control separate from other projects."
+                    )
+            except pygit2.GitError:
+                # .git exists but can't open it - might be corrupted
+                pass
+
+        # No existing repo (or can't use it), create a new one
+        try:
+            self.repo = pygit2.init_repository(self.repo_path)
+
+            # Create .gitignore to exclude everything except notes.db
+            gitignore_path = os.path.join(self.repo_path, '.gitignore')
+            if not os.path.exists(gitignore_path):
+                with open(gitignore_path, 'w') as f:
+                    f.write("# Ignore everything\n")
+                    f.write("*\n")
+                    f.write("\n")
+                    f.write("# Except notes.db and git files\n")
+                    f.write("!notes.db\n")
+                    f.write("!.gitignore\n")
+
+            # Create initial commit
+            self.commit_changes("Initial commit")
+        except pygit2.GitError as init_error:
+            # If ownership error, try to configure git to trust this directory
+            error_str = str(init_error).lower()
+            if "not owned by current user" in error_str or "ownership" in error_str:
+                try:
+                    import subprocess
+                    # Add this directory to git's safe.directory list
+                    subprocess.run(
+                        ["git", "config", "--global", "--add", "safe.directory", self.repo_path],
+                        check=True,
+                        capture_output=True
+                    )
+                    # Try again after configuring
+                    self.repo = pygit2.init_repository(self.repo_path)
+
+                    # Create .gitignore
+                    gitignore_path = os.path.join(self.repo_path, '.gitignore')
+                    if not os.path.exists(gitignore_path):
+                        with open(gitignore_path, 'w') as f:
+                            f.write("# Ignore everything\n")
+                            f.write("*\n")
+                            f.write("\n")
+                            f.write("# Except notes.db and git files\n")
+                            f.write("!notes.db\n")
+                            f.write("!.gitignore\n")
+
+                    self.commit_changes("Initial commit")
+                    return  # Success!
+                except Exception as config_error:
+                    # Configuration failed, continue to error below
+                    pass
+
+            # If we still can't initialize git, raise a helpful error
+            raise RuntimeError(
+                f"Cannot initialize git repository at {self.repo_path}.\n\n"
+                f"This location may not support git repositories due to permission or ownership issues.\n"
+                f"Common causes:\n"
+                f"• Sync folders (OneDrive, Dropbox, Google Drive) may have ownership restrictions\n"
+                f"• Network drives may not support git\n"
+                f"• Some system folders have special permissions\n\n"
+                f"You can try:\n"
+                f"• Choosing a local folder (like Documents\\MyNotes)\n"
+                f"• Using a different sync solution after the database is created\n\n"
+                f"Error: {init_error}"
+            ) from init_error
     
     def commit_changes(self, message: str = "Update notes") -> bool:
         """Commit current state of notes database"""
