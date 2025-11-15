@@ -3733,9 +3733,22 @@ class MainWindow(QMainWindow):
         self.detail_content.setMaximumHeight(200)  # Increased height to accommodate images
         self.detail_content.setReadOnly(True)
         self.detail_content.setAcceptRichText(True)  # Enable HTML/rich text support
-        # Connect click events to handle image zoom
+        self.detail_content.setOpenExternalLinks(False)  # Handle links manually
+        # Connect click events to handle link clicks and image zoom
         self.detail_content.mousePressEvent = self.handle_detail_content_click
         layout.addWidget(self.detail_content)
+
+        # Backlinks section
+        backlinks_title = QLabel("Backlinks")
+        backlinks_title.setStyleSheet("font-weight: bold; font-size: 12px; margin-top: 10px;")
+        layout.addWidget(backlinks_title)
+
+        self.detail_backlinks = QTextEdit()
+        self.detail_backlinks.setMaximumHeight(100)
+        self.detail_backlinks.setReadOnly(True)
+        self.detail_backlinks.setAcceptRichText(True)
+        self.detail_backlinks.setPlaceholderText("No backlinks found")
+        layout.addWidget(self.detail_backlinks)
         
         layout.addStretch()
         
@@ -3992,29 +4005,41 @@ class MainWindow(QMainWindow):
         return " → ".join(breadcrumbs)
     
     def format_content_with_images(self, content):
-        """Format content to display images inline with text"""
+        """Format content to display images inline with text and make [[links]] clickable"""
         import re
         import os
-        
+
         if not content:
             return ""
-        
+
         # Convert plain text to HTML and preserve line breaks
         html_content = content.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         html_content = html_content.replace('\n', '<br>')
-        
+
+        # Convert [[links]] to clickable HTML links BEFORE processing images
+        # Pattern to match [[link text]]
+        link_pattern = r'\[\[([^\]]+)\]\]'
+
+        def replace_link(match):
+            link_text = match.group(1)
+            # Create a clickable link with a custom data attribute for the search term
+            # Use a distinctive color and underline to indicate it's a link
+            return f'<a href="#" data-search-term="{link_text}" style="color: #0066cc; text-decoration: underline; cursor: pointer;">{link_text}</a>'
+
+        html_content = re.sub(link_pattern, replace_link, html_content)
+
         # Image file extensions to detect
         image_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.webp', '.ico'}
-        
+
         # Pattern to match file paths that could be images (including paths with spaces)
         # Matches: /path/to/file.jpg, ./file.png, C:\path\file.jpg, ~/file.png, "/path with spaces/file.jpg", etc.
         # First try quoted paths, then unquoted paths without spaces
         file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
-        
+
         def replace_image_path(match):
             # Get the file path from either the quoted group (1) or unquoted group (2)
             file_path = match.group(1) if match.group(1) else match.group(2)
-            
+
             # Check if the file exists and is an image
             if os.path.isfile(file_path):
                 # Convert to absolute path for the HTML img src
@@ -4026,46 +4051,69 @@ class MainWindow(QMainWindow):
             else:
                 # File doesn't exist, keep as text but highlight it
                 return f'<span style="color: #888; font-style: italic;">{file_path} (not found)</span>'
-        
+
         # Replace image paths with HTML img tags
         html_content = re.sub(file_path_pattern, replace_image_path, html_content, flags=re.IGNORECASE)
-        
+
         return html_content
     
     def handle_detail_content_click(self, event):
-        """Handle clicks in the detail content area to detect image clicks"""
+        """Handle clicks in the detail content area to detect link clicks and image clicks"""
         # First, let the default handling occur
         QTextEdit.mousePressEvent(self.detail_content, event)
-        
+
         # Get the cursor at the click position
         cursor = self.detail_content.cursorForPosition(event.pos())
-        
-        # Get the format at cursor position to check if it's an image
+
+        # Check if we clicked on a link by examining the character format
         char_format = cursor.charFormat()
-        
-        # Check if we clicked on an image by looking at the HTML around cursor
+        if char_format.isAnchor():
+            # Get the anchor href
+            anchor_href = char_format.anchorHref()
+
+            # Parse the HTML to find the search term from data-search-term attribute
+            html_content = self.detail_content.toHtml()
+            import re
+
+            # Find the link text that was clicked by looking at the text around cursor
+            cursor.select(cursor.SelectionType.WordUnderCursor)
+            clicked_text = cursor.selectedText()
+
+            # Look for the data-search-term in the HTML for this link text
+            # Pattern: <a ... data-search-term="search term">link text</a>
+            pattern = rf'data-search-term="([^"]*)"[^>]*>{re.escape(clicked_text)}</a>'
+            match = re.search(pattern, html_content)
+
+            if match:
+                search_term = match.group(1)
+                # Trigger a search for this term
+                self.search_for_link(search_term)
+                return
+
+        # If not a link, check for image clicks
+        # Get the format at cursor position to check if it's an image
         html_content = self.detail_content.toHtml()
         cursor_pos = cursor.position()
-        
+
         # Find all images in the content and check which one we clicked
         import re
         img_pattern = r'<img[^>]*src="([^"]*)"[^>]*>'
-        
+
         # Get the plain text version to better map positions
         plain_text = self.detail_content.toPlainText()
-        
+
         # Look for image file patterns in the plain text that correspond to our current content
-        selected_items = [item for item in self.tree_widget.selectedItems() 
+        selected_items = [item for item in self.tree_widget.selectedItems()
                          if isinstance(item, EditableTreeItem)]
         if selected_items:
             note_content = selected_items[0].note_data.get('content', '')
-            
+
             # Find image file paths in the original content (including paths with spaces)
             file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
             matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
             # Extract actual paths from the tuples (either quoted or unquoted)
             image_matches = [match[0] if match[0] else match[1] for match in matches]
-            
+
             # Check if any image file exists and show the first valid one we find
             # This is a simplified approach - we'll show zoom for any image in the content when clicked
             import os
@@ -4253,7 +4301,18 @@ class MainWindow(QMainWindow):
             # Count children
             children = self.db.get_children(note_data['id'])
             self.detail_children_label.setText(f"Children: {len(children)} | ID: {note_data['id']}")
-            
+
+            # Find and display backlinks
+            backlinks = self.find_backlinks(note_data)
+            if backlinks:
+                backlinks_html = "<ul style='margin: 0; padding-left: 20px;'>"
+                for backlink in backlinks:
+                    backlinks_html += f"<li>{backlink['content'][:100]}...</li>"
+                backlinks_html += "</ul>"
+                self.detail_backlinks.setHtml(backlinks_html)
+            else:
+                self.detail_backlinks.setPlainText("No backlinks found")
+
         elif len(selected_items) > 1:
             # Multiple selection
             self.detail_path_label.setText("Multiple notes selected")
@@ -4265,6 +4324,7 @@ class MainWindow(QMainWindow):
             self.detail_task_checkbox.blockSignals(False)
             self.task_fields_widget.hide()
             self.detail_content.setText("")
+            self.detail_backlinks.setText("")
             self.detail_children_label.setText("Children: -")
             self.current_task_id = None
         else:
@@ -4278,12 +4338,79 @@ class MainWindow(QMainWindow):
             self.detail_task_checkbox.blockSignals(False)
             self.task_fields_widget.hide()
             self.detail_content.setText("")
+            self.detail_backlinks.setText("")
             self.detail_children_label.setText("Children: -")
             self.current_task_id = None
-        
+
         # Update task dashboard
         self.update_task_dashboard()
-    
+
+    def find_backlinks(self, note_data):
+        """Find all notes that contain [[links]] to the current note"""
+        import re
+        import sqlite3
+        backlinks = []
+
+        # Get the current note's content to search for
+        target_content = note_data.get('content', '').strip()
+        if not target_content:
+            return backlinks
+
+        # Search all notes for [[target_content]]
+        link_pattern = re.compile(r'\[\[([^\]]+)\]\]')
+
+        # Get all notes from the database
+        with sqlite3.connect(self.db.db_path) as conn:
+            cursor = conn.execute("SELECT id, content FROM notes WHERE id != ?", (note_data['id'],))
+            all_notes = cursor.fetchall()
+
+        for note_id, content in all_notes:
+            if not content:
+                continue
+
+            # Find all [[links]] in this note
+            matches = link_pattern.findall(content)
+            for link_text in matches:
+                # Check if the link text matches our current note's content
+                if link_text.strip().lower() == target_content.lower():
+                    backlinks.append({'id': note_id, 'content': content})
+                    break  # Only add this note once even if it has multiple matching links
+
+        return backlinks
+
+    def search_for_link(self, search_term):
+        """Perform a search for the given term and display results"""
+        # For now, we'll just focus on the root item if it contains the search term
+        # In a full implementation, you could open a search panel or highlight matching notes
+
+        def search_and_select(item, term):
+            """Recursively search tree items and select the first match"""
+            if isinstance(item, EditableTreeItem):
+                content = item.note_data.get('content', '')
+                if term.lower() in content.lower():
+                    self.tree_widget.setCurrentItem(item)
+                    self.tree_widget.scrollToItem(item)
+                    return True
+
+            # Search children
+            child_count = item.childCount() if hasattr(item, 'childCount') else 0
+            for i in range(child_count):
+                child = item.child(i)
+                if search_and_select(child, term):
+                    return True
+
+            return False
+
+        # Search from root
+        root_count = self.tree_widget.topLevelItemCount()
+        for i in range(root_count):
+            root_item = self.tree_widget.topLevelItem(i)
+            if search_and_select(root_item, search_term):
+                return
+
+        # If nothing found, show a message
+        print(f"No notes found containing: {search_term}")
+
     def on_task_checkbox_changed(self):
         """Handle task checkbox state changes"""
         # Prevent loops during programmatic updates
