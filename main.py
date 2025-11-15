@@ -2504,7 +2504,47 @@ class MainWindow(QMainWindow):
         
         # Initialize database with last opened database path
         last_db_path = self.load_last_database_path()
-        self.db = DatabaseManager(last_db_path)
+
+        # Try to initialize database, handling git initialization errors
+        try:
+            self.db = DatabaseManager(last_db_path)
+        except RuntimeError as e:
+            # Git initialization failed - show error and prompt for new location
+            if "Cannot initialize git repository" in str(e):
+                QMessageBox.critical(
+                    self,
+                    "Git Repository Initialization Failed",
+                    f"{str(e)}\n\nPlease choose a different location for your database file."
+                )
+                # Prompt user to choose a new location
+                from PyQt6.QtWidgets import QFileDialog
+                file_path, _ = QFileDialog.getSaveFileName(
+                    self,
+                    "Create New Database",
+                    "notes.db",
+                    "Database Files (*.db);;All Files (*)"
+                )
+                if file_path:
+                    # Try again with the new path
+                    try:
+                        self.db = DatabaseManager(file_path)
+                        self.save_last_database_path(file_path)
+                    except RuntimeError as e2:
+                        QMessageBox.critical(
+                            self,
+                            "Database Initialization Failed",
+                            f"Could not initialize database at chosen location:\n\n{str(e2)}"
+                        )
+                        # Exit the application
+                        import sys
+                        sys.exit(1)
+                else:
+                    # User cancelled - exit
+                    import sys
+                    sys.exit(1)
+            else:
+                # Some other RuntimeError - re-raise it
+                raise
         
         # Initialize keep-awake manager with user setting
         keep_awake_timeout = self.load_keep_awake_timeout()
@@ -3167,11 +3207,13 @@ class MainWindow(QMainWindow):
             import os
             with open("settings.json", "r") as f:
                 settings = json.load(f)
-                default_path = os.path.expanduser("~/notes.db")
+                # Default to notes.db in current directory, not home directory
+                default_path = os.path.abspath("notes.db")
                 return settings.get("last_database_path", default_path)
         except Exception:
             import os
-            return os.path.expanduser("~/notes.db")
+            # Default to notes.db in current directory, not home directory
+            return os.path.abspath("notes.db")
     
     def save_last_database_path(self, db_path):
         """Save last opened database path to settings"""

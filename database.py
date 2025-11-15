@@ -566,12 +566,21 @@ class GitVersionControl:
             self.repo = pygit2.Repository(self.repo_path)
             # Rebuild undo stack from existing git history
             self._rebuild_undo_stack_from_history()
-        except pygit2.GitError:
-            # Create new repo
-            self.repo = pygit2.init_repository(self.repo_path)
-            
-            # Create initial commit
-            self.commit_changes("Initial commit")
+        except pygit2.GitError as e:
+            # Try to create new repo
+            try:
+                self.repo = pygit2.init_repository(self.repo_path)
+                # Create initial commit
+                self.commit_changes("Initial commit")
+            except pygit2.GitError as init_error:
+                # If we can't initialize git (e.g., permission issues), raise it
+                # The caller should handle this and prompt the user for a different location
+                raise RuntimeError(
+                    f"Cannot initialize git repository at {self.repo_path}.\n\n"
+                    f"This location may not support git repositories due to permission or ownership issues.\n"
+                    f"Please choose a different location for your database.\n\n"
+                    f"Error: {init_error}"
+                ) from init_error
     
     def commit_changes(self, message: str = "Update notes") -> bool:
         """Commit current state of notes database"""
