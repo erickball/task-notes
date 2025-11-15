@@ -13,7 +13,12 @@ except ImportError:
 class DatabaseManager:
     def __init__(self, db_path: str = "notes.db"):
         self.db_path = db_path
-        # Initialize git in the same directory as the database file
+        self.git_vc = None  # Initialize git_vc to None first
+
+        # Create/initialize the database first
+        self.init_database()
+
+        # Only initialize git after database exists
         if GIT_AVAILABLE:
             import os
             # Get absolute path and directory, defaulting to current directory
@@ -23,20 +28,17 @@ class DatabaseManager:
             if not db_dir:
                 db_dir = os.getcwd()
             self.git_vc = GitVersionControl(db_dir, self)
-        else:
-            self.git_vc = None
-        self.init_database()
-
-        # Commit initial state if git is available
-        if self.git_vc:
+            # Commit initial state
             self.git_vc.commit_changes("Initial database state")
     
     def load_database(self, new_db_path: str):
         """Load a different database file"""
         self.db_path = new_db_path
+
+        # Initialize/load the database first
         self.init_database()
 
-        # Reinitialize git for new database location
+        # Reinitialize git for new database location after database is loaded
         if GIT_AVAILABLE:
             import os
             # Get absolute path and directory, defaulting to current directory
@@ -65,7 +67,12 @@ class DatabaseManager:
         # Reinitialize git for new location
         if GIT_AVAILABLE:
             import os
-            db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
+            # Get absolute path and directory, defaulting to current directory
+            abs_db_path = os.path.abspath(new_db_path) if new_db_path else os.path.abspath("notes.db")
+            db_dir = os.path.dirname(abs_db_path)
+            # If db_dir is empty (shouldn't happen but be safe), use current directory
+            if not db_dir:
+                db_dir = os.getcwd()
             self.git_vc = GitVersionControl(db_dir, self)
             self.git_vc.commit_changes(f"Saved from {old_path}")
         
