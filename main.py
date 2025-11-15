@@ -2505,9 +2505,29 @@ class MainWindow(QMainWindow):
         # Initialize database with last opened database path
         last_db_path = self.load_last_database_path()
 
+        # Check if the database file exists
+        import os
+        if not os.path.exists(last_db_path):
+            # No existing database - prompt user to create one
+            from PyQt6.QtWidgets import QFileDialog
+            file_path, _ = QFileDialog.getSaveFileName(
+                self,
+                "Create New Database",
+                "notes.db",
+                "Database Files (*.db);;All Files (*)"
+            )
+            if file_path:
+                last_db_path = file_path
+            else:
+                # User cancelled - exit
+                import sys
+                sys.exit(0)
+
         # Try to initialize database, handling git initialization errors
         try:
             self.db = DatabaseManager(last_db_path)
+            # Save the path after successful initialization
+            self.save_last_database_path(last_db_path)
         except RuntimeError as e:
             # Git initialization failed - show error and prompt for new location
             if "Cannot initialize git repository" in str(e):
