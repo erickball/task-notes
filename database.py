@@ -16,12 +16,17 @@ class DatabaseManager:
         # Initialize git in the same directory as the database file
         if GIT_AVAILABLE:
             import os
-            db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+            # Get absolute path and directory, defaulting to current directory
+            abs_db_path = os.path.abspath(db_path) if db_path else os.path.abspath("notes.db")
+            db_dir = os.path.dirname(abs_db_path)
+            # If db_dir is empty (shouldn't happen but be safe), use current directory
+            if not db_dir:
+                db_dir = os.getcwd()
             self.git_vc = GitVersionControl(db_dir, self)
         else:
             self.git_vc = None
         self.init_database()
-        
+
         # Commit initial state if git is available
         if self.git_vc:
             self.git_vc.commit_changes("Initial database state")
@@ -30,11 +35,16 @@ class DatabaseManager:
         """Load a different database file"""
         self.db_path = new_db_path
         self.init_database()
-        
+
         # Reinitialize git for new database location
         if GIT_AVAILABLE:
             import os
-            db_dir = os.path.dirname(os.path.abspath(new_db_path)) or "."
+            # Get absolute path and directory, defaulting to current directory
+            abs_db_path = os.path.abspath(new_db_path) if new_db_path else os.path.abspath("notes.db")
+            db_dir = os.path.dirname(abs_db_path)
+            # If db_dir is empty (shouldn't happen but be safe), use current directory
+            if not db_dir:
+                db_dir = os.getcwd()
             self.git_vc = GitVersionControl(db_dir, self)
     
     def save_database_as(self, new_db_path: str):
