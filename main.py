@@ -5877,22 +5877,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         print("[UI-3.4] ✓ Layout created", flush=True)
 
-        # Parent note selection
-        print("[UI-3.5] Creating parent widgets...", flush=True)
-        parent_layout = QHBoxLayout()
-        print("[UI-3.5a] HBoxLayout created", flush=True)
-        parent_layout.addWidget(QLabel("Add tasks under:"))
-        print("[UI-3.5b] Label added", flush=True)
+        # Parent note selection - always use root
+        print("[UI-3.5] Setting parent to root (avoiding QComboBox crash)...", flush=True)
+        # QComboBox was causing a crash on Windows, so hardcode to root
+        parent_id = 1
 
-        parent_combo = QComboBox()
-        print("[UI-3.5c] ComboBox created", flush=True)
-        parent_combo.addItem("Root (top level)", 1)
-        print("[UI-3.5d] ComboBox item added", flush=True)
-        parent_layout.addWidget(parent_combo)
-        print("[UI-3.5e] ComboBox added to layout", flush=True)
-
-        layout.addLayout(parent_layout)
-        print("[UI-3.5] ✓ Parent widgets added", flush=True)
+        # Add a label to explain where tasks will be added
+        info_label = QLabel("Tasks will be added under: Root (top level)")
+        layout.addWidget(info_label)
+        print("[UI-3.5] ✓ Parent set to root", flush=True)
 
         layout.addSpacing(10)
         print("[UI-3.6] Spacing added", flush=True)
@@ -5953,10 +5946,7 @@ class MainWindow(QMainWindow):
                 status_text.append("Connected to Todoist API")
                 QApplication.processEvents()
 
-                print("[SYNC-4] Getting parent_id from combo...", flush=True)
-                parent_id = parent_combo.currentData()
-                print(f"[SYNC-4] ✓ parent_id = {parent_id}", flush=True)
-
+                print(f"[SYNC-4] Using parent_id = {parent_id} (root)...", flush=True)
                 status_text.append(f"Fetching tasks from Todoist...")
                 QApplication.processEvents()
 
