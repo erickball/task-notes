@@ -307,6 +307,11 @@ class TodoistSync:
             tasks = list(tasks)
             print(f"[2] ✓ Retrieved {len(tasks)} tasks from Todoist", flush=True)
 
+            # Debug: check what we got
+            if tasks:
+                print(f"[2b] DEBUG: First task type: {type(tasks[0])}", flush=True)
+                print(f"[2b] DEBUG: First task value: {tasks[0]}", flush=True)
+
             # Limit number of tasks
             if len(tasks) > limit:
                 print(f"[3] Limiting to first {limit} tasks (out of {len(tasks)})", flush=True)
@@ -321,16 +326,29 @@ class TodoistSync:
             print(f"[4] Starting task sync loop...", flush=True)
             for i, task in enumerate(tasks):
                 try:
-                    print(f"[4.{i+1}] Syncing task {i+1}/{len(tasks)}: '{task.content[:50]}...'", flush=True)
-                    logger.debug(f"Syncing task {i+1}/{len(tasks)}: {task.content}")
+                    # Debug task type
+                    print(f"[4.{i+1}] Task type: {type(task)}", flush=True)
 
-                    self.sync_task_from_todoist(task, parent_note_id)
+                    # Check if task has content attribute
+                    if hasattr(task, 'content'):
+                        task_preview = task.content[:50]
+                    else:
+                        task_preview = str(task)[:50]
 
-                    synced += 1
-                    print(f"[4.{i+1}] ✓ Synced successfully", flush=True)
+                    print(f"[4.{i+1}] Syncing task {i+1}/{len(tasks)}: '{task_preview}...'", flush=True)
+
+                    if hasattr(task, 'content'):
+                        logger.debug(f"Syncing task {i+1}/{len(tasks)}: {task.content}")
+                        self.sync_task_from_todoist(task, parent_note_id)
+                        synced += 1
+                        print(f"[4.{i+1}] ✓ Synced successfully", flush=True)
+                    else:
+                        print(f"[4.{i+1}] ✗ Error: task is not a Task object, it's {type(task)}", flush=True)
+                        errors += 1
                 except Exception as e:
                     print(f"[4.{i+1}] ✗ Error: {e}", flush=True)
-                    logger.error(f"Failed to sync task {task.id}: {e}", exc_info=True)
+                    task_id = getattr(task, 'id', 'unknown')
+                    logger.error(f"Failed to sync task {task_id}: {e}", exc_info=True)
                     errors += 1
 
             print(f"[5] Task loop complete. Synced={synced}, Errors={errors}", flush=True)
