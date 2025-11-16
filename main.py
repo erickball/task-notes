@@ -2,6 +2,7 @@ import sys
 import re
 import sqlite3
 import time
+import json
 from datetime import datetime, timedelta
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -3242,7 +3243,7 @@ class MainWindow(QMainWindow):
     def set_keep_awake_timeout(self, timeout_minutes):
         """Set the keep-awake timeout and save to settings"""
         self.save_keep_awake_timeout(timeout_minutes)
-        
+
         # Show confirmation message
         if timeout_minutes > 0:
             self.status_bar.showMessage(f"Keep-awake timeout set to {timeout_minutes} minutes", 3000)
@@ -3250,7 +3251,36 @@ class MainWindow(QMainWindow):
         else:
             self.status_bar.showMessage("Keep-awake disabled", 3000)
             print("Keep-awake disabled")
-    
+
+    def load_setting(self, key, default_value=None):
+        """Generic method to load a setting from settings.json"""
+        try:
+            with open("settings.json", "r") as f:
+                settings = json.load(f)
+                return settings.get(key, default_value)
+        except FileNotFoundError:
+            return default_value
+        except Exception as e:
+            print(f"Could not load setting {key}: {e}")
+            return default_value
+
+    def save_setting(self, key, value):
+        """Generic method to save a setting to settings.json"""
+        try:
+            settings = {}
+            try:
+                with open("settings.json", "r") as f:
+                    settings = json.load(f)
+            except FileNotFoundError:
+                pass
+
+            settings[key] = value
+
+            with open("settings.json", "w") as f:
+                json.dump(settings, f, indent=2)
+        except Exception as e:
+            print(f"Could not save setting {key}: {e}")
+
     def add_to_recent_files(self, file_path):
         """Add a file to the recent files list"""
         import os
