@@ -593,10 +593,13 @@ class DatabaseManager:
             return dict(row) if row else None
 
     def get_note_by_todoist_id(self, todoist_id: str) -> Optional[int]:
-        """Get note_id by Todoist task ID"""
+        """Get note_id by Todoist task ID (only if note still exists)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute("""
-                SELECT note_id FROM todoist_sync WHERE todoist_id = ?
+                SELECT ts.note_id
+                FROM todoist_sync ts
+                INNER JOIN notes n ON ts.note_id = n.id
+                WHERE ts.todoist_id = ?
             """, (todoist_id,))
             row = cursor.fetchone()
             return row[0] if row else None
@@ -640,6 +643,19 @@ class DatabaseManager:
                 ORDER BY ts.last_sync DESC
             """)
             return [dict(row) for row in cursor.fetchall()]
+
+    def cleanup_orphaned_todoist_mappings(self) -> int:
+        """Remove Todoist sync mappings where the note no longer exists.
+        Returns the number of orphaned mappings removed."""
+        with sqlite3.connect(self.db_path) as conn:
+            # Find mappings where the note_id doesn't exist in notes table
+            cursor = conn.execute("""
+                DELETE FROM todoist_sync
+                WHERE note_id NOT IN (SELECT id FROM notes)
+            """)
+            deleted_count = cursor.rowcount
+            conn.commit()
+            return deleted_count
 
 
 class GitVersionControl:

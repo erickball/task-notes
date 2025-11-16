@@ -318,6 +318,15 @@ class TodoistSync:
             self.db_manager.disable_git_auto_commit()
             print(f"[1] ✓ Git auto-commits disabled", flush=True)
 
+            # Clean up any orphaned sync mappings (from deleted notes)
+            print(f"[1.5] Cleaning up orphaned sync mappings...", flush=True)
+            orphaned_count = self.db_manager.cleanup_orphaned_todoist_mappings()
+            if orphaned_count > 0:
+                print(f"[1.5] ✓ Removed {orphaned_count} orphaned mappings", flush=True)
+                logger.info(f"Cleaned up {orphaned_count} orphaned Todoist sync mappings")
+            else:
+                print(f"[1.5] ✓ No orphaned mappings found", flush=True)
+
             # Get all tasks
             print(f"[2] Fetching tasks from Todoist API...", flush=True)
             logger.info(f"Fetching tasks from Todoist API (project_id={project_id})")
