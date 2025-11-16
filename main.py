@@ -5893,13 +5893,16 @@ class MainWindow(QMainWindow):
             sync_button.setEnabled(False)
             status_text.clear()
             status_text.append("Initializing Todoist sync...")
+            QApplication.processEvents()  # Update UI
 
             try:
                 sync = TodoistSync(self.db, api_token)
                 status_text.append("Connected to Todoist API")
+                QApplication.processEvents()
 
                 parent_id = parent_combo.currentData()
                 status_text.append(f"Fetching tasks from Todoist...")
+                QApplication.processEvents()
 
                 synced, errors = sync.sync_all_tasks(parent_note_id=parent_id)
 
@@ -5907,14 +5910,21 @@ class MainWindow(QMainWindow):
                 status_text.append(f"✓ {synced} tasks synced")
                 if errors > 0:
                     status_text.append(f"✗ {errors} errors")
+                QApplication.processEvents()
 
                 # Refresh the tree to show new tasks
+                status_text.append("Refreshing task tree...")
+                QApplication.processEvents()
                 self.tree_widget.refresh_tree()
+                status_text.append("Done!")
 
             except Exception as e:
-                status_text.append(f"\nError: {str(e)}")
+                status_text.append(f"\n❌ Error: {str(e)}")
                 import traceback
-                status_text.append(f"\nDetails:\n{traceback.format_exc()}")
+                tb = traceback.format_exc()
+                status_text.append(f"\nTraceback:\n{tb}")
+                print(f"Todoist sync error: {e}")
+                print(tb)
 
             finally:
                 sync_button.setEnabled(True)

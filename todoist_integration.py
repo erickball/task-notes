@@ -20,7 +20,10 @@ except ImportError:
 from database import DatabaseManager
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 
@@ -136,22 +139,84 @@ class TodoistSync:
         Returns:
             note_id of created or updated note
         """
-        # Check if this task is already synced
-        existing_note_id = self.db_manager.get_note_by_todoist_id(task.id)
+        try:
+            # Check if this task is already synced
+            existing_note_id = self.db_manager.get_note_by_todoist_id(task.id)
+            logger.debug(f"Syncing task '{task.content}' (ID: {task.id}), existing_note_id: {existing_note_id}")
 
-        task_data = self._convert_task_to_note(task, parent_id)
+            task_data = self._convert_task_to_note(task, parent_id)
 
-        if existing_note_id:
-            # Update existing note
-            note_id = existing_note_id
-            self.db_manager.update_note(note_id, task_data['content'])
+            if existing_note_id:
+                # Update existing note
+                note_id = existing_note_id
+                logger.debug(f"Updating existing note {note_id}")
+                self.db_manager.update_note(note_id, task_data['content'])
 
-            # Update task properties if it's marked as a task
-            note = self.db_manager.get_note(note_id)
-            if note and note.get('task_status'):
+                # Get current note state
+                note = self.db_manager.get_note(note_id)
+
+                # If note is not a task yet, convert it to a task
+                if note and not note.get('task_status'):
+                    logger.debug(f"Converting note {note_id} to task")
+                    self.db_manager.toggle_task(note_id)
+                    note = self.db_manager.get_note(note_id)  # Refresh note data
+
+                # Update task properties
+                if note:
+                    logger.debug(f"Updating task properties for note {note_id}")
+                    with sqlite3.connect(self.db_manager.db_path) as conn:
+                        if task_data['priority']:
+                            conn.execute("""
+                                UPDATE tasks SET priority = ? WHERE note_id = ?
+                            """, (task_data['priority'], note_id))
+                            conn.commit()
+
+                    if task_data['due_date']:
+                        self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
+
+                    # Update completion status
+                    current_status = note.get('task_status')
+                    logger.debug(f"Current status: {current_status}, target completed: {task_data['is_completed']}")
+
+                    if task_data['is_completed'] and current_status != 'complete':
+                        # Need to get to complete state
+                        logger.debug(f"Toggling to complete from {current_status}")
+                        max_iterations = 4  # Prevent infinite loop
+                        iterations = 0
+                        while current_status != 'complete' and iterations < max_iterations:
+                            current_status = self.db_manager.toggle_task(note_id)
+                            iterations += 1
+                            logger.debug(f"After toggle: {current_status}")
+                        if iterations >= max_iterations:
+                            logger.warning(f"Could not set task {note_id} to complete after {iterations} iterations")
+
+                    elif not task_data['is_completed'] and current_status != 'active':
+                        # Need to get to active state
+                        logger.debug(f"Toggling to active from {current_status}")
+                        max_iterations = 4
+                        iterations = 0
+                        while current_status != 'active' and iterations < max_iterations:
+                            current_status = self.db_manager.toggle_task(note_id)
+                            iterations += 1
+                            logger.debug(f"After toggle: {current_status}")
+                        if iterations >= max_iterations:
+                            logger.warning(f"Could not set task {note_id} to active after {iterations} iterations")
+            else:
+                # Create new note
+                logger.debug(f"Creating new note for task '{task.content}'")
+                note_id = self.db_manager.create_note(
+                    parent_id=task_data['parent_id'],
+                    content=task_data['content']
+                )
+
+                # Convert to task
+                logger.debug(f"Converting new note {note_id} to task")
+                self.db_manager.toggle_task(note_id)  # Create active task
+
+                # Set task properties
+                logger.debug(f"Setting task properties for note {note_id}")
                 with sqlite3.connect(self.db_manager.db_path) as conn:
                     if task_data['priority']:
-                        # Update priority through task table
                         conn.execute("""
                             UPDATE tasks SET priority = ? WHERE note_id = ?
                         """, (task_data['priority'], note_id))
@@ -160,55 +225,37 @@ class TodoistSync:
                 if task_data['due_date']:
                     self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
 
-                # Update completion status
-                if task_data['is_completed'] and note.get('task_status') != 'complete':
-                    # Toggle to complete state
-                    current_status = note.get('task_status')
-                    while current_status != 'complete':
+                # Set completion status if needed
+                if task_data['is_completed']:
+                    logger.debug(f"Setting task {note_id} to complete")
+                    current_status = 'active'
+                    max_iterations = 4
+                    iterations = 0
+                    while current_status != 'complete' and iterations < max_iterations:
                         current_status = self.db_manager.toggle_task(note_id)
-                elif not task_data['is_completed'] and note.get('task_status') == 'complete':
-                    # Toggle back to active if it was completed in Todoist
-                    self.db_manager.toggle_task(note_id)
-        else:
-            # Create new note
-            note_id = self.db_manager.create_note(
-                parent_id=task_data['parent_id'],
-                content=task_data['content']
-            )
+                        iterations += 1
+                        logger.debug(f"After toggle: {current_status}")
+                    if iterations >= max_iterations:
+                        logger.warning(f"Could not set new task {note_id} to complete after {iterations} iterations")
 
-            # Convert to task if it has task properties
-            self.db_manager.toggle_task(note_id)  # Create task
+                # Create sync mapping
+                logger.debug(f"Creating sync mapping for note {note_id} to Todoist ID {task_data['todoist_id']}")
+                self.db_manager.create_todoist_mapping(
+                    note_id=note_id,
+                    todoist_id=task_data['todoist_id'],
+                    todoist_project_id=task_data['todoist_project_id'],
+                    todoist_parent_id=task_data['todoist_parent_id']
+                )
 
-            # Set task properties
-            with sqlite3.connect(self.db_manager.db_path) as conn:
-                if task_data['priority']:
-                    conn.execute("""
-                        UPDATE tasks SET priority = ? WHERE note_id = ?
-                    """, (task_data['priority'], note_id))
-                    conn.commit()
+            # Update sync timestamp
+            self.db_manager.update_todoist_sync(note_id)
 
-            if task_data['due_date']:
-                self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
+            logger.info(f"Synced task '{task.content}' (Todoist ID: {task.id}) to note {note_id}")
+            return note_id
 
-            # Set completion status if needed
-            if task_data['is_completed']:
-                current_status = 'active'
-                while current_status != 'complete':
-                    current_status = self.db_manager.toggle_task(note_id)
-
-            # Create sync mapping
-            self.db_manager.create_todoist_mapping(
-                note_id=note_id,
-                todoist_id=task_data['todoist_id'],
-                todoist_project_id=task_data['todoist_project_id'],
-                todoist_parent_id=task_data['todoist_parent_id']
-            )
-
-        # Update sync timestamp
-        self.db_manager.update_todoist_sync(note_id)
-
-        logger.info(f"Synced task '{task.content}' (Todoist ID: {task.id}) to note {note_id}")
-        return note_id
+        except Exception as e:
+            logger.error(f"Error syncing task '{task.content}' (ID: {task.id}): {e}", exc_info=True)
+            raise
 
     def sync_all_tasks(self, project_id: str = None, parent_note_id: int = 1) -> Tuple[int, int]:
         """
