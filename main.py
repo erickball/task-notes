@@ -1500,31 +1500,31 @@ class NoteTreeWidget(QTreeWidget):
         # Finish editing if we're deleting the item being edited
         if self.editing_item in selected_items:
             self.finish_editing()
-            
-            # Remember parent for selection after deletion
-            parent_to_select = None
-            if len(selected_items) == 1:
-                parent_to_select = selected_items[0].parent()
-            
-            # Delete from database and tree
-            for item in selected_items:
-                # Delete from database
-                self.db.delete_note(item.note_id)
-                
-                # Remove from tree directly
-                parent_item = item.parent()
-                if parent_item:
-                    parent_item.removeChild(item)
-                else:
-                    # This was a top-level item
-                    root = self.invisibleRootItem()
-                    root.removeChild(item)
-            
-            # Select appropriate item after deletion
-            if parent_to_select:
-                self.setCurrentItem(parent_to_select)
-            elif self.topLevelItemCount() > 0:
-                self.setCurrentItem(self.topLevelItem(0))
+
+        # Remember parent for selection after deletion
+        parent_to_select = None
+        if len(selected_items) == 1:
+            parent_to_select = selected_items[0].parent()
+
+        # Delete from database and tree
+        for item in selected_items:
+            # Delete from database
+            self.db.delete_note(item.note_id)
+
+            # Remove from tree directly
+            parent_item = item.parent()
+            if parent_item:
+                parent_item.removeChild(item)
+            else:
+                # This was a top-level item
+                root = self.invisibleRootItem()
+                root.removeChild(item)
+
+        # Select appropriate item after deletion
+        if parent_to_select:
+            self.setCurrentItem(parent_to_select)
+        elif self.topLevelItemCount() > 0:
+            self.setCurrentItem(self.topLevelItem(0))
     
     def change_indentation(self, direction):
         """Change indentation level of selected item(s)"""
