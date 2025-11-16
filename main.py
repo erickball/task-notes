@@ -5865,42 +5865,67 @@ class MainWindow(QMainWindow):
         # Show sync dialog
         print("[UI-3] Creating sync dialog...", flush=True)
         dialog = QDialog(self)
+        print("[UI-3.1] QDialog created", flush=True)
         dialog.setWindowTitle("Sync Tasks from Todoist")
+        print("[UI-3.2] Title set", flush=True)
         dialog.setModal(True)
+        print("[UI-3.3] Modal set", flush=True)
         dialog.resize(400, 250)
-        print("[UI-3] ✓ Dialog created", flush=True)
+        print("[UI-3] ✓ Dialog configured", flush=True)
 
+        print("[UI-3.4] Creating layout...", flush=True)
         layout = QVBoxLayout(dialog)
+        print("[UI-3.4] ✓ Layout created", flush=True)
 
         # Parent note selection
+        print("[UI-3.5] Creating parent widgets...", flush=True)
         parent_layout = QHBoxLayout()
+        print("[UI-3.5a] HBoxLayout created", flush=True)
         parent_layout.addWidget(QLabel("Add tasks under:"))
+        print("[UI-3.5b] Label added", flush=True)
 
         parent_combo = QComboBox()
+        print("[UI-3.5c] ComboBox created", flush=True)
         parent_combo.addItem("Root (top level)", 1)
-        # Could add more parent options here
+        print("[UI-3.5d] ComboBox item added", flush=True)
         parent_layout.addWidget(parent_combo)
+        print("[UI-3.5e] ComboBox added to layout", flush=True)
 
         layout.addLayout(parent_layout)
+        print("[UI-3.5] ✓ Parent widgets added", flush=True)
 
         layout.addSpacing(10)
+        print("[UI-3.6] Spacing added", flush=True)
 
         # Progress/status display
+        print("[UI-3.7] Creating status text...", flush=True)
         status_text = QTextEdit()
+        print("[UI-3.7a] QTextEdit created", flush=True)
         status_text.setReadOnly(True)
+        print("[UI-3.7b] Read-only set", flush=True)
         status_text.setMaximumHeight(100)
+        print("[UI-3.7c] Max height set", flush=True)
         layout.addWidget(status_text)
+        print("[UI-3.7] ✓ Status text added", flush=True)
 
         layout.addStretch()
+        print("[UI-3.8] Stretch added", flush=True)
 
         # Buttons
+        print("[UI-3.9] Creating buttons...", flush=True)
         button_layout = QHBoxLayout()
+        print("[UI-3.9a] Button layout created", flush=True)
         button_layout.addStretch()
+        print("[UI-3.9b] Button stretch added", flush=True)
 
         sync_button = QPushButton("Start Sync")
+        print("[UI-3.9c] Sync button created", flush=True)
         close_button = QPushButton("Close")
+        print("[UI-3.9d] Close button created", flush=True)
         close_button.setEnabled(False)
+        print("[UI-3.9e] Close button disabled", flush=True)
         close_button.clicked.connect(dialog.accept)
+        print("[UI-3.9] ✓ Buttons created", flush=True)
 
         def perform_sync():
             print("\n" + "="*60, flush=True)
