@@ -1921,10 +1921,10 @@ class NoteTreeWidget(QTreeWidget):
     
     def eventFilter(self, obj, event):
         """Filter events for the text edit widget to handle shortcuts while editing"""
-        # Handle Shift+Click to follow links
+        # Handle Alt+Click to follow links
         if obj == self.edit_widget and event.type() == QEvent.Type.MouseButtonPress:
-            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-                # Shift+Click detected - check if we're on a [[link]]
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                # Alt+Click detected - check if we're on a [[link]]
                 cursor = self.edit_widget.cursorForPosition(event.pos())
                 cursor.select(cursor.SelectionType.LineUnderCursor)
                 line_text = cursor.selectedText()
@@ -1944,7 +1944,7 @@ class NoteTreeWidget(QTreeWidget):
                     end = match.end()
                     if start <= click_pos <= end:
                         link_text = match.group(1)
-                        print(f"DEBUG: Shift+Click on link: {link_text}")
+                        print(f"DEBUG: Alt+Click on link: {link_text}")
                         # Save and finish editing, then search
                         self.finish_editing()
                         main_window = self.window()
@@ -4464,36 +4464,85 @@ class MainWindow(QMainWindow):
 
     def search_for_link(self, search_term):
         """Perform a search for the given term and display results"""
-        # For now, we'll just focus on the root item if it contains the search term
-        # In a full implementation, you could open a search panel or highlight matching notes
+        import sqlite3
 
-        def search_and_select(item, term):
-            """Recursively search tree items and select the first match"""
+        print(f"DEBUG: Searching for notes matching: '{search_term}'")
+
+        # Search database for notes with matching content
+        with sqlite3.connect(self.db.db_path) as conn:
+            # First try exact match
+            cursor = conn.execute(
+                "SELECT id, content FROM notes WHERE LOWER(TRIM(content)) = LOWER(?)",
+                (search_term.strip(),)
+            )
+            results = cursor.fetchall()
+
+            # If no exact match, try partial match
+            if not results:
+                cursor = conn.execute(
+                    "SELECT id, content FROM notes WHERE LOWER(content) LIKE LOWER(?)",
+                    (f'%{search_term}%',)
+                )
+                results = cursor.fetchall()
+
+        print(f"DEBUG: Found {len(results)} matching notes")
+
+        if results:
+            # Get the first result
+            note_id, content = results[0]
+            print(f"DEBUG: Navigating to note {note_id}: {content[:50]}")
+
+            # Find this note in the tree
+            found_item = self.find_tree_item_by_note_id(note_id)
+
+            if found_item:
+                # Select and scroll to it
+                self.tree_widget.setCurrentItem(found_item)
+                self.tree_widget.scrollToItem(found_item)
+                print(f"DEBUG: Successfully selected note {note_id}")
+            else:
+                print(f"DEBUG: Note {note_id} not found in visible tree")
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self,
+                    "Note Not Visible",
+                    f"Found note '{content[:50]}...' but it's not currently visible in the tree.\n\n"
+                    f"Try expanding the tree to find it."
+                )
+        else:
+            print(f"No notes found containing: {search_term}")
+            # Show a user-friendly message
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self,
+                "No Results",
+                f"No notes found matching '[[{search_term}]]'"
+            )
+
+    def find_tree_item_by_note_id(self, note_id):
+        """Recursively search tree for an item with the given note_id"""
+        def search_item(item):
             if isinstance(item, EditableTreeItem):
-                content = item.note_data.get('content', '')
-                if term.lower() in content.lower():
-                    self.tree_widget.setCurrentItem(item)
-                    self.tree_widget.scrollToItem(item)
-                    return True
+                if item.note_id == note_id:
+                    return item
 
             # Search children
             child_count = item.childCount() if hasattr(item, 'childCount') else 0
             for i in range(child_count):
                 child = item.child(i)
-                if search_and_select(child, term):
-                    return True
+                result = search_item(child)
+                if result:
+                    return result
+            return None
 
-            return False
-
-        # Search from root
+        # Search from all root items
         root_count = self.tree_widget.topLevelItemCount()
         for i in range(root_count):
             root_item = self.tree_widget.topLevelItem(i)
-            if search_and_select(root_item, search_term):
-                return
-
-        # If nothing found, show a message
-        print(f"No notes found containing: {search_term}")
+            result = search_item(root_item)
+            if result:
+                return result
+        return None
 
     def on_task_checkbox_changed(self):
         """Handle task checkbox state changes"""
