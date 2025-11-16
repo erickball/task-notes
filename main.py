@@ -4463,61 +4463,9 @@ class MainWindow(QMainWindow):
         return backlinks
 
     def search_for_link(self, search_term):
-        """Perform a search for the given term and display results"""
-        import sqlite3
-
-        print(f"DEBUG: Searching for notes matching: '{search_term}'")
-
-        # Search database for notes with matching content
-        with sqlite3.connect(self.db.db_path) as conn:
-            # First try exact match
-            cursor = conn.execute(
-                "SELECT id, content FROM notes WHERE LOWER(TRIM(content)) = LOWER(?)",
-                (search_term.strip(),)
-            )
-            results = cursor.fetchall()
-
-            # If no exact match, try partial match
-            if not results:
-                cursor = conn.execute(
-                    "SELECT id, content FROM notes WHERE LOWER(content) LIKE LOWER(?)",
-                    (f'%{search_term}%',)
-                )
-                results = cursor.fetchall()
-
-        print(f"DEBUG: Found {len(results)} matching notes")
-
-        if results:
-            # Get the first result
-            note_id, content = results[0]
-            print(f"DEBUG: Navigating to note {note_id}: {content[:50]}")
-
-            # Find this note in the tree
-            found_item = self.find_tree_item_by_note_id(note_id)
-
-            if found_item:
-                # Select and scroll to it
-                self.tree_widget.setCurrentItem(found_item)
-                self.tree_widget.scrollToItem(found_item)
-                print(f"DEBUG: Successfully selected note {note_id}")
-            else:
-                print(f"DEBUG: Note {note_id} not found in visible tree")
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.information(
-                    self,
-                    "Note Not Visible",
-                    f"Found note '{content[:50]}...' but it's not currently visible in the tree.\n\n"
-                    f"Try expanding the tree to find it."
-                )
-        else:
-            print(f"No notes found containing: {search_term}")
-            # Show a user-friendly message
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self,
-                "No Results",
-                f"No notes found matching '[[{search_term}]]'"
-            )
+        """Open the Find dialog with the given search term"""
+        # Use the existing Find dialog functionality
+        self.show_search_dialog(initial_search_term=search_term)
 
     def find_tree_item_by_note_id(self, note_id):
         """Recursively search tree for an item with the given note_id"""
@@ -5751,58 +5699,64 @@ class MainWindow(QMainWindow):
             import traceback
             traceback.print_exc()
     
-    def show_search_dialog(self):
+    def show_search_dialog(self, initial_search_term=None):
         """Show search dialog to find notes"""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QListWidget, QLabel
-        
+
         # Create search dialog
         dialog = QDialog(self)
         dialog.setWindowTitle("Search Notes")
         dialog.setModal(False)  # Allow interaction with main window
         dialog.resize(500, 400)
-        
+
         layout = QVBoxLayout(dialog)
-        
+
         # Search input
         search_layout = QHBoxLayout()
         search_layout.addWidget(QLabel("Search for:"))
-        
+
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Enter search term...")
         search_layout.addWidget(self.search_input)
-        
+
         search_button = QPushButton("Search")
         search_button.clicked.connect(lambda: self.perform_search(dialog))
         search_layout.addWidget(search_button)
-        
+
         layout.addLayout(search_layout)
-        
+
         # Results list
         layout.addWidget(QLabel("Results:"))
         self.search_results = QListWidget()
         self.search_results.itemDoubleClicked.connect(self.on_search_result_selected)
         layout.addWidget(self.search_results)
-        
+
         # Status label
         self.search_status = QLabel("Enter a search term and click Search")
         layout.addWidget(self.search_status)
-        
+
         # Buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        
+
         close_button = QPushButton("Close")
         close_button.clicked.connect(dialog.close)
         button_layout.addWidget(close_button)
-        
+
         layout.addLayout(button_layout)
-        
+
         # Connect Enter key to search
         self.search_input.returnPressed.connect(lambda: self.perform_search(dialog))
-        
+
+        # If an initial search term was provided, populate and search
+        if initial_search_term:
+            self.search_input.setText(initial_search_term)
+            # Perform search automatically
+            self.perform_search(dialog)
+
         # Focus on search input
         self.search_input.setFocus()
-        
+
         # Show dialog
         dialog.show()
     
