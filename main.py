@@ -5827,7 +5827,13 @@ class MainWindow(QMainWindow):
 
     def sync_todoist(self):
         """Sync tasks from Todoist"""
+        print("\n" + "="*60, flush=True)
+        print(">>> sync_todoist() called", flush=True)
+        print("="*60 + "\n", flush=True)
+
+        print("[UI-1] Checking TODOIST_AVAILABLE...", flush=True)
         if not TODOIST_AVAILABLE:
+            print("[UI-1] Todoist not available!", flush=True)
             QMessageBox.warning(
                 self,
                 "Todoist Not Available",
@@ -5836,10 +5842,15 @@ class MainWindow(QMainWindow):
                 "pip install todoist-api-python"
             )
             return
+        print("[UI-1] ✓ Todoist is available", flush=True)
 
         # Get API token from settings
+        print("[UI-2] Loading API token from settings...", flush=True)
         api_token = self.load_setting("todoist_api_token", "")
+        print(f"[UI-2] ✓ API token loaded (length: {len(api_token) if api_token else 0})", flush=True)
+
         if not api_token:
+            print("[UI-2] No API token found!", flush=True)
             reply = QMessageBox.question(
                 self,
                 "API Token Not Configured",
@@ -5852,10 +5863,12 @@ class MainWindow(QMainWindow):
             return
 
         # Show sync dialog
+        print("[UI-3] Creating sync dialog...", flush=True)
         dialog = QDialog(self)
         dialog.setWindowTitle("Sync Tasks from Todoist")
         dialog.setModal(True)
         dialog.resize(400, 250)
+        print("[UI-3] ✓ Dialog created", flush=True)
 
         layout = QVBoxLayout(dialog)
 
@@ -5890,21 +5903,41 @@ class MainWindow(QMainWindow):
         close_button.clicked.connect(dialog.accept)
 
         def perform_sync():
+            print("\n" + "="*60, flush=True)
+            print(">>> perform_sync() called", flush=True)
+            print("="*60 + "\n", flush=True)
+
+            print("[SYNC-1] Disabling sync button...", flush=True)
             sync_button.setEnabled(False)
+            print("[SYNC-1] ✓ Button disabled", flush=True)
+
+            print("[SYNC-2] Clearing status text...", flush=True)
             status_text.clear()
             status_text.append("Initializing Todoist sync...")
             QApplication.processEvents()  # Update UI
+            print("[SYNC-2] ✓ Status text cleared", flush=True)
 
             try:
+                print("[SYNC-3] Creating TodoistSync object...", flush=True)
+                print(f"[SYNC-3]   db_manager type: {type(self.db)}", flush=True)
+                print(f"[SYNC-3]   api_token length: {len(api_token)}", flush=True)
+
                 sync = TodoistSync(self.db, api_token)
+
+                print("[SYNC-3] ✓ TodoistSync created", flush=True)
                 status_text.append("Connected to Todoist API")
                 QApplication.processEvents()
 
+                print("[SYNC-4] Getting parent_id from combo...", flush=True)
                 parent_id = parent_combo.currentData()
+                print(f"[SYNC-4] ✓ parent_id = {parent_id}", flush=True)
+
                 status_text.append(f"Fetching tasks from Todoist...")
                 QApplication.processEvents()
 
+                print("[SYNC-5] Calling sync.sync_all_tasks()...", flush=True)
                 synced, errors = sync.sync_all_tasks(parent_note_id=parent_id)
+                print(f"[SYNC-5] ✓ sync_all_tasks returned: synced={synced}, errors={errors}", flush=True)
 
                 status_text.append(f"\nSync complete!")
                 status_text.append(f"✓ {synced} tasks synced")
@@ -5930,14 +5963,20 @@ class MainWindow(QMainWindow):
                 sync_button.setEnabled(True)
                 close_button.setEnabled(True)
 
+        print("[UI-4] Connecting sync button to perform_sync...", flush=True)
         sync_button.clicked.connect(perform_sync)
+        print("[UI-4] ✓ Button connected", flush=True)
 
+        print("[UI-5] Adding widgets to layout...", flush=True)
         button_layout.addWidget(sync_button)
         button_layout.addWidget(close_button)
 
         layout.addLayout(button_layout)
+        print("[UI-5] ✓ Widgets added", flush=True)
 
+        print("[UI-6] Showing dialog...", flush=True)
         dialog.exec()
+        print("[UI-6] ✓ Dialog closed", flush=True)
 
     def view_todoist_status(self):
         """Show Todoist sync status and synced tasks"""
