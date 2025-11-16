@@ -1921,6 +1921,37 @@ class NoteTreeWidget(QTreeWidget):
     
     def eventFilter(self, obj, event):
         """Filter events for the text edit widget to handle shortcuts while editing"""
+        # Handle Ctrl+Click to follow links
+        if obj == self.edit_widget and event.type() == QEvent.Type.MouseButtonPress:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                # Ctrl+Click detected - check if we're on a [[link]]
+                cursor = self.edit_widget.cursorForPosition(event.pos())
+                cursor.select(cursor.SelectionType.LineUnderCursor)
+                line_text = cursor.selectedText()
+
+                # Find [[link]] pattern under cursor
+                import re
+                link_pattern = r'\[\[([^\]]+)\]\]'
+                matches = re.finditer(link_pattern, line_text)
+
+                # Get cursor position within the line
+                cursor_at_click = self.edit_widget.cursorForPosition(event.pos())
+                click_pos = cursor_at_click.positionInBlock()
+
+                # Check if click position is within any [[link]]
+                for match in matches:
+                    start = match.start()
+                    end = match.end()
+                    if start <= click_pos <= end:
+                        link_text = match.group(1)
+                        print(f"DEBUG: Ctrl+Click on link: {link_text}")
+                        # Save and finish editing, then search
+                        self.finish_editing()
+                        main_window = self.window()
+                        if hasattr(main_window, 'search_for_link'):
+                            main_window.search_for_link(link_text)
+                        return True
+
         if obj == self.edit_widget and event.type() == QEvent.Type.KeyPress:
             key = event.key()
             modifiers = event.modifiers()
@@ -4121,13 +4152,18 @@ class MainWindow(QMainWindow):
     def handle_detail_content_click(self, event):
         """Handle clicks in the detail content area to detect link clicks and image clicks"""
         from PyQt6.QtCore import Qt
+        import re
+
+        print(f"DEBUG: Click detected at position {event.pos()}")
 
         # Check if we clicked on an anchor/link
         anchor = self.detail_content.anchorAt(event.pos())
+        print(f"DEBUG: Anchor at position: '{anchor}'")
+
         if anchor:
             # We clicked on a link! Parse the HTML to find the search term
             html_content = self.detail_content.toHtml()
-            import re
+            print(f"DEBUG: HTML content length: {len(html_content)}")
 
             # Look for data-search-term attribute near this anchor
             # The anchor might be "#" or empty, so we need to find the link by the clicked position
@@ -4136,20 +4172,34 @@ class MainWindow(QMainWindow):
             # Select the word/link under cursor to get the link text
             cursor.select(cursor.SelectionType.WordUnderCursor)
             clicked_text = cursor.selectedText()
+            print(f"DEBUG: Clicked text: '{clicked_text}'")
 
             # Try to find the data-search-term for this link text
             # Pattern: <a ... data-search-term="search term">link text</a>
             # The clicked_text might be part of a multi-word link, so be flexible
             pattern = rf'data-search-term="([^"]*)"[^>]*>([^<]*{re.escape(clicked_text)}[^<]*)</a>'
             match = re.search(pattern, html_content, re.IGNORECASE)
+            print(f"DEBUG: Pattern match: {match}")
 
             if match:
                 search_term = match.group(1)
                 # Trigger a search for this term
-                print(f"Clicking link to search for: {search_term}")
+                print(f"SUCCESS: Clicking link to search for: {search_term}")
                 self.search_for_link(search_term)
                 event.accept()
                 return
+            else:
+                # Try a simpler approach - just extract the data-search-term directly
+                simple_pattern = r'data-search-term="([^"]*)"'
+                all_matches = re.findall(simple_pattern, html_content)
+                print(f"DEBUG: All data-search-term values found: {all_matches}")
+                if all_matches:
+                    # Use the first one for now (could be improved)
+                    search_term = all_matches[0]
+                    print(f"SUCCESS: Using first link found: {search_term}")
+                    self.search_for_link(search_term)
+                    event.accept()
+                    return
 
         # Not a link - let default handling occur for other interactions
         QTextEdit.mousePressEvent(self.detail_content, event)
@@ -4164,7 +4214,6 @@ class MainWindow(QMainWindow):
             note_content = selected_items[0].note_data.get('content', '')
 
             # Find image file paths in the original content (including paths with spaces)
-            import re
             import os
             file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
             matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
