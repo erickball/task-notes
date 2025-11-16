@@ -6,6 +6,7 @@ Syncs tasks from Todoist into the Task Notes application
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 import logging
+import itertools
 
 try:
     from todoist_api_python.api import TodoistAPI
@@ -298,19 +299,19 @@ class TodoistSync:
             print(f"[2] Fetching tasks from Todoist API...", flush=True)
             logger.info(f"Fetching tasks from Todoist API (project_id={project_id})")
             if project_id:
-                tasks = self.api.get_tasks(project_id=project_id)
+                tasks_paginator = self.api.get_tasks(project_id=project_id)
             else:
-                tasks = self.api.get_tasks()
+                tasks_paginator = self.api.get_tasks()
 
-            # Convert ResultsPaginator to list
-            print(f"[2a] Converting tasks iterator to list...", flush=True)
-            tasks = list(tasks)
+            # Convert ResultsPaginator to flat list (paginator returns pages, each page is a list)
+            print(f"[2a] Converting tasks paginator to flat list...", flush=True)
+            tasks = list(itertools.chain.from_iterable(tasks_paginator))
             print(f"[2] ✓ Retrieved {len(tasks)} tasks from Todoist", flush=True)
 
             # Debug: check what we got
             if tasks:
                 print(f"[2b] DEBUG: First task type: {type(tasks[0])}", flush=True)
-                print(f"[2b] DEBUG: First task value: {tasks[0]}", flush=True)
+                print(f"[2b] DEBUG: First task content: {tasks[0].content[:50] if hasattr(tasks[0], 'content') else 'N/A'}", flush=True)
 
             # Limit number of tasks
             if len(tasks) > limit:
