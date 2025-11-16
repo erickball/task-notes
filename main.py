@@ -1921,10 +1921,10 @@ class NoteTreeWidget(QTreeWidget):
     
     def eventFilter(self, obj, event):
         """Filter events for the text edit widget to handle shortcuts while editing"""
-        # Handle Ctrl+Click to follow links
+        # Handle Shift+Click to follow links
         if obj == self.edit_widget and event.type() == QEvent.Type.MouseButtonPress:
-            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-                # Ctrl+Click detected - check if we're on a [[link]]
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+Click detected - check if we're on a [[link]]
                 cursor = self.edit_widget.cursorForPosition(event.pos())
                 cursor.select(cursor.SelectionType.LineUnderCursor)
                 line_text = cursor.selectedText()
@@ -1944,7 +1944,7 @@ class NoteTreeWidget(QTreeWidget):
                     end = match.end()
                     if start <= click_pos <= end:
                         link_text = match.group(1)
-                        print(f"DEBUG: Ctrl+Click on link: {link_text}")
+                        print(f"DEBUG: Shift+Click on link: {link_text}")
                         # Save and finish editing, then search
                         self.finish_editing()
                         main_window = self.window()
@@ -4114,9 +4114,12 @@ class MainWindow(QMainWindow):
 
         def replace_link(match):
             link_text = match.group(1)
-            # Create a clickable link with a custom data attribute for the search term
+            # Encode the search term in the href (QTextEdit strips custom data attributes)
+            # Use URL encoding for special characters
+            import urllib.parse
+            encoded_term = urllib.parse.quote(link_text)
             # Use a distinctive color and underline to indicate it's a link
-            return f'<a href="#" data-search-term="{link_text}" style="color: #0066cc; text-decoration: underline; cursor: pointer;">{link_text}</a>'
+            return f'<a href="#search:{encoded_term}" style="color: #0066cc; text-decoration: underline; cursor: pointer;">{link_text}</a>'
 
         html_content = re.sub(link_pattern, replace_link, html_content)
 
@@ -4161,45 +4164,21 @@ class MainWindow(QMainWindow):
         print(f"DEBUG: Anchor at position: '{anchor}'")
 
         if anchor:
-            # We clicked on a link! Parse the HTML to find the search term
-            html_content = self.detail_content.toHtml()
-            print(f"DEBUG: HTML content length: {len(html_content)}")
+            # We clicked on a link! Parse the href to get the search term
+            print(f"DEBUG: Anchor href: '{anchor}'")
 
-            # Look for data-search-term attribute near this anchor
-            # The anchor might be "#" or empty, so we need to find the link by the clicked position
-            cursor = self.detail_content.cursorForPosition(event.pos())
-
-            # Select the word/link under cursor to get the link text
-            cursor.select(cursor.SelectionType.WordUnderCursor)
-            clicked_text = cursor.selectedText()
-            print(f"DEBUG: Clicked text: '{clicked_text}'")
-
-            # Try to find the data-search-term for this link text
-            # Pattern: <a ... data-search-term="search term">link text</a>
-            # The clicked_text might be part of a multi-word link, so be flexible
-            pattern = rf'data-search-term="([^"]*)"[^>]*>([^<]*{re.escape(clicked_text)}[^<]*)</a>'
-            match = re.search(pattern, html_content, re.IGNORECASE)
-            print(f"DEBUG: Pattern match: {match}")
-
-            if match:
-                search_term = match.group(1)
-                # Trigger a search for this term
-                print(f"SUCCESS: Clicking link to search for: {search_term}")
+            # Check if it's a wiki link (format: #search:encoded_term)
+            if anchor.startswith('#search:'):
+                # Extract and decode the search term
+                import urllib.parse
+                encoded_term = anchor[8:]  # Remove '#search:' prefix
+                search_term = urllib.parse.unquote(encoded_term)
+                print(f"SUCCESS: Clicking link to search for: '{search_term}'")
                 self.search_for_link(search_term)
                 event.accept()
                 return
             else:
-                # Try a simpler approach - just extract the data-search-term directly
-                simple_pattern = r'data-search-term="([^"]*)"'
-                all_matches = re.findall(simple_pattern, html_content)
-                print(f"DEBUG: All data-search-term values found: {all_matches}")
-                if all_matches:
-                    # Use the first one for now (could be improved)
-                    search_term = all_matches[0]
-                    print(f"SUCCESS: Using first link found: {search_term}")
-                    self.search_for_link(search_term)
-                    event.accept()
-                    return
+                print(f"DEBUG: Anchor doesn't match wiki link format")
 
         # Not a link - let default handling occur for other interactions
         QTextEdit.mousePressEvent(self.detail_content, event)
