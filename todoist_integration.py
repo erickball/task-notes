@@ -302,6 +302,9 @@ class TodoistSync:
             else:
                 tasks = self.api.get_tasks()
 
+            # Convert ResultsPaginator to list
+            print(f"[2a] Converting tasks iterator to list...", flush=True)
+            tasks = list(tasks)
             print(f"[2] ✓ Retrieved {len(tasks)} tasks from Todoist", flush=True)
 
             # Limit number of tasks
