@@ -13,6 +13,7 @@ except ImportError:
 class DatabaseManager:
     def __init__(self, db_path: str = "notes.db"):
         self.db_path = db_path
+        self._git_auto_commit_enabled = True  # Flag to control auto-commits
         # Initialize git in the same directory as the database file
         if GIT_AVAILABLE:
             import os
@@ -21,7 +22,7 @@ class DatabaseManager:
         else:
             self.git_vc = None
         self.init_database()
-        
+
         # Commit initial state if git is available
         if self.git_vc:
             self.git_vc.commit_changes("Initial database state")
@@ -64,7 +65,19 @@ class DatabaseManager:
     def get_current_database_path(self) -> str:
         """Get the current database file path"""
         return self.db_path
-    
+
+    def disable_git_auto_commit(self):
+        """Temporarily disable automatic git commits (for bulk operations)"""
+        self._git_auto_commit_enabled = False
+
+    def enable_git_auto_commit(self):
+        """Re-enable automatic git commits"""
+        self._git_auto_commit_enabled = True
+
+    def _should_git_commit(self) -> bool:
+        """Check if git commits should be performed"""
+        return self._git_auto_commit_enabled and self.git_vc is not None
+
     def rebuild_paths(self):
         """Rebuild all note paths to ensure consistency"""
         with sqlite3.connect(self.db_path) as conn:
@@ -304,9 +317,9 @@ class DatabaseManager:
             conn.commit()
             
             # Auto-commit to git
-            if self.git_vc:
+            if self._should_git_commit():
                 self.git_vc.commit_changes(f"Create note {note_id}: {content[:50] or '(empty)'}...")
-            
+
             return note_id
     
     def update_note(self, note_id: int, content: str, force_update: bool = False):
@@ -335,7 +348,7 @@ class DatabaseManager:
             conn.commit()
 
         # Auto-commit to git only if there was a change
-        if self.git_vc:
+        if self._should_git_commit():
             self.git_vc.commit_changes(f"Update note {note_id}: {content[:50]}...")
     
     def delete_note(self, note_id: int):
@@ -356,7 +369,7 @@ class DatabaseManager:
             conn.commit()
         
         # Auto-commit to git
-        if self.git_vc:
+        if self._should_git_commit():
             self.git_vc.commit_changes(f"Delete note {note_id}: {note_content[:50]}...")
     
     def get_note(self, note_id: int) -> Optional[Dict]:
@@ -403,7 +416,7 @@ class DatabaseManager:
             conn.commit()
             
             # Auto-commit to git
-            if self.git_vc:
+            if self._should_git_commit():
                 if new_status is None:
                     self.git_vc.commit_changes(f"Remove task status from note {note_id}")
                 else:
@@ -415,27 +428,45 @@ class DatabaseManager:
         """Update start or due date for a task"""
         if date_type not in ['start_date', 'due_date']:
             raise ValueError("date_type must be 'start_date' or 'due_date'")
-        
+
         with sqlite3.connect(self.db_path) as conn:
             # Ensure task exists
             cursor = conn.execute("SELECT note_id FROM tasks WHERE note_id = ?", (note_id,))
             if not cursor.fetchone():
                 # Create task if it doesn't exist with default priority 4
                 conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, 'active', ?)", (note_id, 4))
-            
+
             # Update the date
             date_str = date_value.isoformat() if date_value else None
             conn.execute(f"UPDATE tasks SET {date_type} = ? WHERE note_id = ?", (date_str, note_id))
-            
+
             # Update the note's modified timestamp since metadata changed
             conn.execute("UPDATE notes SET modified_at = CURRENT_TIMESTAMP WHERE id = ?", (note_id,))
-            
+
             conn.commit()
-        
+
         # Auto-commit to git
-        if self.git_vc:
+        if self._should_git_commit():
             date_desc = date_value.strftime('%Y-%m-%d %H:%M') if date_value else 'cleared'
             self.git_vc.commit_changes(f"Update task {note_id} {date_type} to {date_desc}")
+
+    def update_task_priority(self, note_id: int, priority: int):
+        """Update priority for a task"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Ensure task exists
+            cursor = conn.execute("SELECT note_id FROM tasks WHERE note_id = ?", (note_id,))
+            if not cursor.fetchone():
+                # Create task if it doesn't exist
+                conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, 'active', ?)", (note_id, priority))
+            else:
+                # Update priority
+                conn.execute("UPDATE tasks SET priority = ? WHERE note_id = ?", (priority, note_id))
+
+            conn.commit()
+
+        # Auto-commit to git
+        if self._should_git_commit():
+            self.git_vc.commit_changes(f"Update task {note_id} priority to {priority}")
     
     def move_note(self, note_id: int, new_parent_id: int, new_position: int):
         """Move a note to a new parent at specific position"""
@@ -516,7 +547,7 @@ class DatabaseManager:
             conn.commit()
             
         # Auto-commit to git
-        if self.git_vc:
+        if self._should_git_commit():
             self.git_vc.commit_changes(f"Move note {note_id} to parent {new_parent_id}")
     
     def save_expansion_state(self, note_id: int, is_expanded: bool):

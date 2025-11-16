@@ -6,7 +6,6 @@ Syncs tasks from Todoist into the Task Notes application
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 import logging
-import sqlite3
 
 try:
     from todoist_api_python.api import TodoistAPI
@@ -164,12 +163,8 @@ class TodoistSync:
                 # Update task properties
                 if note:
                     logger.debug(f"Updating task properties for note {note_id}")
-                    with sqlite3.connect(self.db_manager.db_path) as conn:
-                        if task_data['priority']:
-                            conn.execute("""
-                                UPDATE tasks SET priority = ? WHERE note_id = ?
-                            """, (task_data['priority'], note_id))
-                            conn.commit()
+                    if task_data['priority']:
+                        self.db_manager.update_task_priority(note_id, task_data['priority'])
 
                     if task_data['due_date']:
                         self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
@@ -215,12 +210,8 @@ class TodoistSync:
 
                 # Set task properties
                 logger.debug(f"Setting task properties for note {note_id}")
-                with sqlite3.connect(self.db_manager.db_path) as conn:
-                    if task_data['priority']:
-                        conn.execute("""
-                            UPDATE tasks SET priority = ? WHERE note_id = ?
-                        """, (task_data['priority'], note_id))
-                        conn.commit()
+                if task_data['priority']:
+                    self.db_manager.update_task_priority(note_id, task_data['priority'])
 
                 if task_data['due_date']:
                     self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
@@ -272,28 +263,49 @@ class TodoistSync:
             raise RuntimeError("API not initialized. Set API token first.")
 
         try:
+            # Disable git auto-commits during bulk sync to prevent hundreds of commits
+            logger.info("Disabling git auto-commits for bulk sync")
+            self.db_manager.disable_git_auto_commit()
+
             # Get all tasks
+            logger.info(f"Fetching tasks from Todoist API (project_id={project_id})")
             if project_id:
                 tasks = self.api.get_tasks(project_id=project_id)
             else:
                 tasks = self.api.get_tasks()
 
+            logger.info(f"Retrieved {len(tasks)} tasks from Todoist")
             synced = 0
             errors = 0
 
-            for task in tasks:
+            for i, task in enumerate(tasks):
                 try:
+                    logger.debug(f"Syncing task {i+1}/{len(tasks)}: {task.content}")
                     self.sync_task_from_todoist(task, parent_note_id)
                     synced += 1
                 except Exception as e:
-                    logger.error(f"Failed to sync task {task.id}: {e}")
+                    logger.error(f"Failed to sync task {task.id}: {e}", exc_info=True)
                     errors += 1
+
+            # Re-enable git commits and do a single commit for all changes
+            logger.info("Re-enabling git auto-commits")
+            self.db_manager.enable_git_auto_commit()
+
+            # Create a single git commit for all synced tasks
+            if self.db_manager.git_vc:
+                commit_msg = f"Sync {synced} tasks from Todoist"
+                if errors > 0:
+                    commit_msg += f" ({errors} errors)"
+                logger.info(f"Creating git commit: {commit_msg}")
+                self.db_manager.git_vc.commit_changes(commit_msg)
 
             logger.info(f"Sync complete: {synced} tasks synced, {errors} errors")
             return (synced, errors)
 
         except Exception as e:
-            logger.error(f"Failed to sync tasks: {e}")
+            logger.error(f"Failed to sync tasks: {e}", exc_info=True)
+            # Make sure to re-enable git commits even if there's an error
+            self.db_manager.enable_git_auto_commit()
             raise
 
     def get_projects(self) -> List[Dict]:
