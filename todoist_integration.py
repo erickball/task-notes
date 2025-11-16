@@ -272,7 +272,7 @@ class TodoistSync:
             traceback.print_exc()
             raise
 
-    def sync_all_tasks(self, project_id: str = None, parent_note_id: int = 1, limit: int = 100) -> Tuple[int, int]:
+    def sync_all_tasks(self, project_id: str = None, parent_note_id: int = 1, limit: int = 100, include_completed: bool = False) -> Tuple[int, int]:
         """
         Sync all tasks from Todoist
 
@@ -280,6 +280,7 @@ class TodoistSync:
             project_id: Optional project ID to filter tasks
             parent_note_id: Parent note to add tasks under (default: root)
             limit: Maximum number of tasks to sync (default: 100)
+            include_completed: Whether to include completed tasks (default: False)
 
         Returns:
             Tuple of (tasks_synced, errors)
@@ -307,6 +308,15 @@ class TodoistSync:
             print(f"[2a] Converting tasks paginator to flat list...", flush=True)
             tasks = list(itertools.chain.from_iterable(tasks_paginator))
             print(f"[2] ✓ Retrieved {len(tasks)} tasks from Todoist", flush=True)
+
+            # Filter out completed tasks unless requested
+            if not include_completed:
+                original_count = len(tasks)
+                tasks = [t for t in tasks if not t.is_completed]
+                filtered_count = original_count - len(tasks)
+                if filtered_count > 0:
+                    print(f"[2c] Filtered out {filtered_count} completed tasks", flush=True)
+                    logger.info(f"Filtered out {filtered_count} completed tasks")
 
             # Debug: check what we got
             if tasks:

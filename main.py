@@ -5770,6 +5770,21 @@ class MainWindow(QMainWindow):
 
         layout.addSpacing(10)
 
+        # Sync parent location input
+        parent_layout = QHBoxLayout()
+        parent_layout.addWidget(QLabel("Sync to Note ID:"))
+
+        parent_input = QLineEdit()
+        parent_input.setPlaceholderText("Enter note ID (1 = Root)")
+        current_parent = self.load_setting("todoist_sync_parent", "1")
+        parent_input.setText(str(current_parent))
+        parent_input.setToolTip("The note ID where Todoist tasks will be added. Use 1 for Root.")
+
+        parent_layout.addWidget(parent_input)
+        layout.addLayout(parent_layout)
+
+        layout.addSpacing(10)
+
         # Status label
         status_label = QLabel("")
         layout.addWidget(status_label)
@@ -5804,17 +5819,26 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(test_button)
 
         save_button = QPushButton("Save")
-        def save_token():
+        def save_settings():
             token = token_input.text().strip()
             self.save_setting("todoist_api_token", token)
-            QMessageBox.information(
-                self,
-                "Settings Saved",
-                "Todoist API token has been saved successfully."
-            )
-            dialog.accept()
 
-        save_button.clicked.connect(save_token)
+            # Validate and save parent note ID
+            parent_text = parent_input.text().strip()
+            try:
+                parent_id = int(parent_text) if parent_text else 1
+                self.save_setting("todoist_sync_parent", parent_id)
+                QMessageBox.information(
+                    self,
+                    "Settings Saved",
+                    f"Todoist settings saved successfully.\nTasks will sync to Note ID: {parent_id}"
+                )
+                dialog.accept()
+            except ValueError:
+                status_label.setText("Error: Note ID must be a number")
+                status_label.setStyleSheet("color: red;")
+
+        save_button.clicked.connect(save_settings)
         button_layout.addWidget(save_button)
 
         cancel_button = QPushButton("Cancel")
@@ -5877,15 +5901,15 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         print("[UI-3.4] ✓ Layout created", flush=True)
 
-        # Parent note selection - always use root
-        print("[UI-3.5] Setting parent to root (avoiding QComboBox crash)...", flush=True)
-        # QComboBox was causing a crash on Windows, so hardcode to root
-        parent_id = 1
+        # Parent note selection - use configured setting
+        print("[UI-3.5] Loading sync parent from settings...", flush=True)
+        parent_id = int(self.load_setting("todoist_sync_parent", "1"))
 
         # Add a label to explain where tasks will be added
-        info_label = QLabel("Tasks will be added under: Root (top level)")
+        parent_name = "Root" if parent_id == 1 else f"Note ID {parent_id}"
+        info_label = QLabel(f"Tasks will be added under: {parent_name}")
         layout.addWidget(info_label)
-        print("[UI-3.5] ✓ Parent set to root", flush=True)
+        print(f"[UI-3.5] ✓ Parent set to {parent_id}", flush=True)
 
         layout.addSpacing(10)
         print("[UI-3.6] Spacing added", flush=True)
