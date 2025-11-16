@@ -2,3 +2,4 @@ PyQt6>=6.4.0
 markdown>=3.4.0
 pygit2>=1.12.0
 python-dateutil>=2.8.0
+todoist-api-python>=2.0.0

@@ -214,10 +214,21 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            
+
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS todoist_sync (
+                    note_id INTEGER PRIMARY KEY REFERENCES notes(id),
+                    todoist_id TEXT NOT NULL UNIQUE,
+                    last_sync TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    todoist_project_id TEXT,
+                    todoist_parent_id TEXT
+                )
+            """)
+
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_parent ON notes(parent_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_modified ON notes(modified_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_todoist_sync_todoist_id ON todoist_sync(todoist_id)")
             
             # Create root note if it doesn't exist
             cursor = conn.execute("SELECT COUNT(*) FROM notes WHERE id = 1")
@@ -534,6 +545,67 @@ class DatabaseManager:
                 LIMIT 100
             """, (f"%{search_term}%",))
             
+            return [dict(row) for row in cursor.fetchall()]
+
+    # Todoist Integration Methods
+
+    def get_todoist_mapping(self, note_id: int) -> Optional[Dict]:
+        """Get Todoist sync information for a note"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT * FROM todoist_sync WHERE note_id = ?
+            """, (note_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_note_by_todoist_id(self, todoist_id: str) -> Optional[int]:
+        """Get note_id by Todoist task ID"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("""
+                SELECT note_id FROM todoist_sync WHERE todoist_id = ?
+            """, (todoist_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def create_todoist_mapping(self, note_id: int, todoist_id: str,
+                              todoist_project_id: str = None,
+                              todoist_parent_id: str = None):
+        """Create or update a Todoist sync mapping"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                INSERT OR REPLACE INTO todoist_sync
+                (note_id, todoist_id, todoist_project_id, todoist_parent_id, last_sync)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            """, (note_id, todoist_id, todoist_project_id, todoist_parent_id))
+            conn.commit()
+
+    def update_todoist_sync(self, note_id: int):
+        """Update the last sync timestamp for a note"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                UPDATE todoist_sync
+                SET last_sync = CURRENT_TIMESTAMP
+                WHERE note_id = ?
+            """, (note_id,))
+            conn.commit()
+
+    def delete_todoist_mapping(self, note_id: int):
+        """Remove Todoist sync mapping for a note"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM todoist_sync WHERE note_id = ?", (note_id,))
+            conn.commit()
+
+    def get_all_todoist_mappings(self) -> List[Dict]:
+        """Get all Todoist sync mappings"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute("""
+                SELECT ts.*, n.content, n.parent_id, n.path
+                FROM todoist_sync ts
+                JOIN notes n ON ts.note_id = n.id
+                ORDER BY ts.last_sync DESC
+            """)
             return [dict(row) for row in cursor.fetchall()]
 
 

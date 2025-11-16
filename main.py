@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from database import DatabaseManager, GitVersionControl, GIT_AVAILABLE
+from todoist_integration import TodoistSync, TODOIST_AVAILABLE
 
 class KeepAwakeManager:
     """Prevents system sleep for a specified duration after user activity"""
@@ -3585,12 +3586,35 @@ class MainWindow(QMainWindow):
         
         if GIT_AVAILABLE and self.db.git_vc:
             view_menu.addSeparator()
-            
+
             history_action = QAction("Show Version History", self)
             history_action.setShortcut("Ctrl+H")
             history_action.triggered.connect(self.show_git_history)
             view_menu.addAction(history_action)
-        
+
+        # Tools menu
+        tools_menu = menubar.addMenu("Tools")
+
+        # Todoist integration submenu
+        todoist_menu = tools_menu.addMenu("Todoist Integration")
+
+        configure_todoist_action = QAction("Configure API Token...", self)
+        configure_todoist_action.triggered.connect(self.configure_todoist)
+        todoist_menu.addAction(configure_todoist_action)
+
+        todoist_menu.addSeparator()
+
+        sync_todoist_action = QAction("Sync Tasks from Todoist", self)
+        sync_todoist_action.setShortcut("Ctrl+Shift+T")
+        sync_todoist_action.triggered.connect(self.sync_todoist)
+        todoist_menu.addAction(sync_todoist_action)
+
+        todoist_menu.addSeparator()
+
+        view_todoist_status_action = QAction("View Sync Status...", self)
+        view_todoist_status_action.triggered.connect(self.view_todoist_status)
+        todoist_menu.addAction(view_todoist_status_action)
+
         # Store default font size and load saved font size
         self.default_font_size = self.tree_widget.font().pointSize()
         self.load_font_size()
@@ -5665,7 +5689,265 @@ class MainWindow(QMainWindow):
             self.reminder_notifications.remove(notification)
             # Mark this task as dismissed so it won't show again today
             self.dismissed_reminders.add(notification.task_id)
-    
+
+    # Todoist Integration Methods
+
+    def configure_todoist(self):
+        """Show dialog to configure Todoist API token"""
+        if not TODOIST_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Todoist Not Available",
+                "The Todoist integration is not available.\n\n"
+                "Please install it by running:\n"
+                "pip install todoist-api-python"
+            )
+            return
+
+        # Create configuration dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Configure Todoist Integration")
+        dialog.setModal(True)
+        dialog.resize(500, 200)
+
+        layout = QVBoxLayout(dialog)
+
+        # Instructions
+        instructions = QLabel(
+            "Enter your Todoist API token to enable synchronization.\n"
+            "You can find your API token at: Settings → Integrations → Developer"
+        )
+        instructions.setWordWrap(True)
+        layout.addWidget(instructions)
+
+        layout.addSpacing(10)
+
+        # API Token input
+        token_layout = QHBoxLayout()
+        token_layout.addWidget(QLabel("API Token:"))
+
+        token_input = QLineEdit()
+        token_input.setPlaceholderText("Enter your Todoist API token...")
+        token_input.setEchoMode(QLineEdit.EchoMode.Password)
+
+        # Load existing token if available
+        current_token = self.load_setting("todoist_api_token", "")
+        if current_token:
+            token_input.setText(current_token)
+
+        token_layout.addWidget(token_input)
+        layout.addLayout(token_layout)
+
+        layout.addSpacing(10)
+
+        # Status label
+        status_label = QLabel("")
+        layout.addWidget(status_label)
+
+        layout.addStretch()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        test_button = QPushButton("Test Connection")
+        def test_connection():
+            token = token_input.text().strip()
+            if not token:
+                status_label.setText("Please enter an API token")
+                status_label.setStyleSheet("color: red;")
+                return
+
+            try:
+                sync = TodoistSync(self.db, token)
+                if sync.test_connection():
+                    status_label.setText("Connection successful!")
+                    status_label.setStyleSheet("color: green;")
+                else:
+                    status_label.setText("Connection failed. Please check your token.")
+                    status_label.setStyleSheet("color: red;")
+            except Exception as e:
+                status_label.setText(f"Error: {str(e)}")
+                status_label.setStyleSheet("color: red;")
+
+        test_button.clicked.connect(test_connection)
+        button_layout.addWidget(test_button)
+
+        save_button = QPushButton("Save")
+        def save_token():
+            token = token_input.text().strip()
+            self.save_setting("todoist_api_token", token)
+            QMessageBox.information(
+                self,
+                "Settings Saved",
+                "Todoist API token has been saved successfully."
+            )
+            dialog.accept()
+
+        save_button.clicked.connect(save_token)
+        button_layout.addWidget(save_button)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_button)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
+    def sync_todoist(self):
+        """Sync tasks from Todoist"""
+        if not TODOIST_AVAILABLE:
+            QMessageBox.warning(
+                self,
+                "Todoist Not Available",
+                "The Todoist integration is not available.\n\n"
+                "Please install it by running:\n"
+                "pip install todoist-api-python"
+            )
+            return
+
+        # Get API token from settings
+        api_token = self.load_setting("todoist_api_token", "")
+        if not api_token:
+            reply = QMessageBox.question(
+                self,
+                "API Token Not Configured",
+                "Todoist API token is not configured.\n\n"
+                "Would you like to configure it now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.configure_todoist()
+            return
+
+        # Show sync dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Sync Tasks from Todoist")
+        dialog.setModal(True)
+        dialog.resize(400, 250)
+
+        layout = QVBoxLayout(dialog)
+
+        # Parent note selection
+        parent_layout = QHBoxLayout()
+        parent_layout.addWidget(QLabel("Add tasks under:"))
+
+        parent_combo = QComboBox()
+        parent_combo.addItem("Root (top level)", 1)
+        # Could add more parent options here
+        parent_layout.addWidget(parent_combo)
+
+        layout.addLayout(parent_layout)
+
+        layout.addSpacing(10)
+
+        # Progress/status display
+        status_text = QTextEdit()
+        status_text.setReadOnly(True)
+        status_text.setMaximumHeight(100)
+        layout.addWidget(status_text)
+
+        layout.addStretch()
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        sync_button = QPushButton("Start Sync")
+        close_button = QPushButton("Close")
+        close_button.setEnabled(False)
+        close_button.clicked.connect(dialog.accept)
+
+        def perform_sync():
+            sync_button.setEnabled(False)
+            status_text.clear()
+            status_text.append("Initializing Todoist sync...")
+
+            try:
+                sync = TodoistSync(self.db, api_token)
+                status_text.append("Connected to Todoist API")
+
+                parent_id = parent_combo.currentData()
+                status_text.append(f"Fetching tasks from Todoist...")
+
+                synced, errors = sync.sync_all_tasks(parent_note_id=parent_id)
+
+                status_text.append(f"\nSync complete!")
+                status_text.append(f"✓ {synced} tasks synced")
+                if errors > 0:
+                    status_text.append(f"✗ {errors} errors")
+
+                # Refresh the tree to show new tasks
+                self.tree_widget.refresh_tree()
+
+            except Exception as e:
+                status_text.append(f"\nError: {str(e)}")
+                import traceback
+                status_text.append(f"\nDetails:\n{traceback.format_exc()}")
+
+            finally:
+                sync_button.setEnabled(True)
+                close_button.setEnabled(True)
+
+        sync_button.clicked.connect(perform_sync)
+
+        button_layout.addWidget(sync_button)
+        button_layout.addWidget(close_button)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
+    def view_todoist_status(self):
+        """Show Todoist sync status and synced tasks"""
+        # Create status dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Todoist Sync Status")
+        dialog.setModal(False)
+        dialog.resize(600, 400)
+
+        layout = QVBoxLayout(dialog)
+
+        # Get synced tasks
+        mappings = self.db.get_all_todoist_mappings()
+
+        # Summary
+        summary_label = QLabel(f"Total synced tasks: {len(mappings)}")
+        summary_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        layout.addWidget(summary_label)
+
+        layout.addSpacing(10)
+
+        # List of synced tasks
+        if mappings:
+            list_widget = QListWidget()
+            for mapping in mappings:
+                content = mapping['content'][:80]
+                if len(mapping['content']) > 80:
+                    content += "..."
+
+                last_sync = mapping['last_sync']
+                item_text = f"{content}\n  Todoist ID: {mapping['todoist_id']} | Last sync: {last_sync}"
+                list_widget.addItem(item_text)
+
+            layout.addWidget(list_widget)
+        else:
+            no_sync_label = QLabel("No tasks have been synced yet.")
+            layout.addWidget(no_sync_label)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        button_layout.addWidget(close_button)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec()
+
     def closeEvent(self, event):
         """Handle application closing"""
         # Remove event filter from application
