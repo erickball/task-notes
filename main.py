@@ -4120,56 +4120,52 @@ class MainWindow(QMainWindow):
     
     def handle_detail_content_click(self, event):
         """Handle clicks in the detail content area to detect link clicks and image clicks"""
-        # First, let the default handling occur
-        QTextEdit.mousePressEvent(self.detail_content, event)
+        from PyQt6.QtCore import Qt
 
-        # Get the cursor at the click position
-        cursor = self.detail_content.cursorForPosition(event.pos())
-
-        # Check if we clicked on a link by examining the character format
-        char_format = cursor.charFormat()
-        if char_format.isAnchor():
-            # Get the anchor href
-            anchor_href = char_format.anchorHref()
-
-            # Parse the HTML to find the search term from data-search-term attribute
+        # Check if we clicked on an anchor/link
+        anchor = self.detail_content.anchorAt(event.pos())
+        if anchor:
+            # We clicked on a link! Parse the HTML to find the search term
             html_content = self.detail_content.toHtml()
             import re
 
-            # Find the link text that was clicked by looking at the text around cursor
+            # Look for data-search-term attribute near this anchor
+            # The anchor might be "#" or empty, so we need to find the link by the clicked position
+            cursor = self.detail_content.cursorForPosition(event.pos())
+
+            # Select the word/link under cursor to get the link text
             cursor.select(cursor.SelectionType.WordUnderCursor)
             clicked_text = cursor.selectedText()
 
-            # Look for the data-search-term in the HTML for this link text
+            # Try to find the data-search-term for this link text
             # Pattern: <a ... data-search-term="search term">link text</a>
-            pattern = rf'data-search-term="([^"]*)"[^>]*>{re.escape(clicked_text)}</a>'
-            match = re.search(pattern, html_content)
+            # The clicked_text might be part of a multi-word link, so be flexible
+            pattern = rf'data-search-term="([^"]*)"[^>]*>([^<]*{re.escape(clicked_text)}[^<]*)</a>'
+            match = re.search(pattern, html_content, re.IGNORECASE)
 
             if match:
                 search_term = match.group(1)
                 # Trigger a search for this term
+                print(f"Clicking link to search for: {search_term}")
                 self.search_for_link(search_term)
+                event.accept()
                 return
 
-        # If not a link, check for image clicks
-        # Get the format at cursor position to check if it's an image
-        html_content = self.detail_content.toHtml()
-        cursor_pos = cursor.position()
+        # Not a link - let default handling occur for other interactions
+        QTextEdit.mousePressEvent(self.detail_content, event)
 
-        # Find all images in the content and check which one we clicked
-        import re
-        img_pattern = r'<img[^>]*src="([^"]*)"[^>]*>'
+        # Check for image clicks
+        cursor = self.detail_content.cursorForPosition(event.pos())
 
-        # Get the plain text version to better map positions
-        plain_text = self.detail_content.toPlainText()
-
-        # Look for image file patterns in the plain text that correspond to our current content
+        # Look for image file patterns in the original content
         selected_items = [item for item in self.tree_widget.selectedItems()
                          if isinstance(item, EditableTreeItem)]
         if selected_items:
             note_content = selected_items[0].note_data.get('content', '')
 
             # Find image file paths in the original content (including paths with spaces)
+            import re
+            import os
             file_path_pattern = r'(?:^|\s)(?:"([^"]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico))"|([^\s]*\.(?:png|jpg|jpeg|gif|bmp|svg|webp|ico)))(?=\s|$)'
             matches = re.findall(file_path_pattern, note_content, re.IGNORECASE)
             # Extract actual paths from the tuples (either quoted or unquoted)
@@ -4177,7 +4173,6 @@ class MainWindow(QMainWindow):
 
             # Check if any image file exists and show the first valid one we find
             # This is a simplified approach - we'll show zoom for any image in the content when clicked
-            import os
             for image_path in image_matches:
                 if os.path.isfile(image_path):
                     # Check if the click was roughly in the area where images are displayed
