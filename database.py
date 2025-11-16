@@ -362,7 +362,9 @@ class DatabaseManager:
                 note_content = row[0]
         
         with sqlite3.connect(self.db_path) as conn:
-            # Delete tasks first
+            # Delete todoist sync mappings first (for this note and all children)
+            conn.execute("DELETE FROM todoist_sync WHERE note_id IN (SELECT id FROM notes WHERE path LIKE (SELECT path || '.%' FROM notes WHERE id = ?) OR id = ?)", (note_id, note_id))
+            # Delete tasks
             conn.execute("DELETE FROM tasks WHERE note_id IN (SELECT id FROM notes WHERE path LIKE (SELECT path || '.%' FROM notes WHERE id = ?) OR id = ?)", (note_id, note_id))
             # Delete notes
             conn.execute("DELETE FROM notes WHERE path LIKE (SELECT path || '.%' FROM notes WHERE id = ?) OR id = ?", (note_id, note_id))

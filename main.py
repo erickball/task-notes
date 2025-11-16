@@ -5987,8 +5987,8 @@ class MainWindow(QMainWindow):
                 # Refresh the tree to show new tasks
                 status_text.append("Refreshing task tree...")
                 QApplication.processEvents()
-                print("[SYNC-6] Refreshing tree for root (id=1)...", flush=True)
-                self.tree_widget.refresh_parent(1)  # Refresh root to show synced tasks
+                print(f"[SYNC-6] Refreshing tree for parent (id={parent_id})...", flush=True)
+                self.tree_widget.refresh_parent(parent_id)  # Refresh configured parent to show synced tasks
                 print("[SYNC-6] ✓ Tree refreshed", flush=True)
                 status_text.append("Done!")
 

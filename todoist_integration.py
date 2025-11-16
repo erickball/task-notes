@@ -128,36 +128,44 @@ class TodoistSync:
             'is_completed': task.is_completed
         }
 
-    def sync_task_from_todoist(self, task: Task, parent_id: int = 1) -> int:
+    def sync_task_from_todoist(self, task: Task, parent_id: int = 1, verbose: bool = False) -> int:
         """
         Sync a single task from Todoist to the database
 
         Args:
             task: Todoist Task object
             parent_id: Parent note ID (default: root)
+            verbose: Show detailed debug output (default: False)
 
         Returns:
             note_id of created or updated note
         """
         try:
-            print(f"      → sync_task_from_todoist START: '{task.content[:30]}'", flush=True)
-            # Check if this task is already synced
-            print(f"      → Checking for existing sync...", flush=True)
+            if verbose:
+                print(f"      → sync_task_from_todoist START: '{task.content[:30]}'", flush=True)
+                print(f"      → Checking for existing sync...", flush=True)
+
             existing_note_id = self.db_manager.get_note_by_todoist_id(task.id)
             logger.debug(f"Syncing task '{task.content}' (ID: {task.id}), existing_note_id: {existing_note_id}")
-            print(f"      → Existing note: {existing_note_id}", flush=True)
 
-            print(f"      → Converting task data...", flush=True)
+            if verbose:
+                print(f"      → Existing note: {existing_note_id}", flush=True)
+                print(f"      → Converting task data...", flush=True)
+
             task_data = self._convert_task_to_note(task, parent_id)
-            print(f"      → Task data converted", flush=True)
+
+            if verbose:
+                print(f"      → Task data converted", flush=True)
 
             if existing_note_id:
                 # Update existing note
                 note_id = existing_note_id
-                print(f"      → Updating existing note {note_id}...", flush=True)
+                if verbose:
+                    print(f"      → Updating existing note {note_id}...", flush=True)
                 logger.debug(f"Updating existing note {note_id}")
                 self.db_manager.update_note(note_id, task_data['content'])
-                print(f"      → Note content updated", flush=True)
+                if verbose:
+                    print(f"      → Note content updated", flush=True)
 
                 # Get current note state
                 note = self.db_manager.get_note(note_id)
@@ -206,31 +214,39 @@ class TodoistSync:
                             logger.warning(f"Could not set task {note_id} to active after {iterations} iterations")
             else:
                 # Create new note
-                print(f"      → Creating new note...", flush=True)
+                if verbose:
+                    print(f"      → Creating new note...", flush=True)
                 logger.debug(f"Creating new note for task '{task.content}'")
                 note_id = self.db_manager.create_note(
                     parent_id=task_data['parent_id'],
                     content=task_data['content']
                 )
-                print(f"      → Note {note_id} created", flush=True)
+                if verbose:
+                    print(f"      → Note {note_id} created", flush=True)
 
                 # Convert to task
-                print(f"      → Converting to task...", flush=True)
+                if verbose:
+                    print(f"      → Converting to task...", flush=True)
                 logger.debug(f"Converting new note {note_id} to task")
                 self.db_manager.toggle_task(note_id)  # Create active task
-                print(f"      → Converted to task", flush=True)
+                if verbose:
+                    print(f"      → Converted to task", flush=True)
 
                 # Set task properties
-                print(f"      → Setting task properties...", flush=True)
+                if verbose:
+                    print(f"      → Setting task properties...", flush=True)
                 logger.debug(f"Setting task properties for note {note_id}")
                 if task_data['priority']:
-                    print(f"      → Setting priority to {task_data['priority']}...", flush=True)
+                    if verbose:
+                        print(f"      → Setting priority to {task_data['priority']}...", flush=True)
                     self.db_manager.update_task_priority(note_id, task_data['priority'])
 
                 if task_data['due_date']:
-                    print(f"      → Setting due date to {task_data['due_date']}...", flush=True)
+                    if verbose:
+                        print(f"      → Setting due date to {task_data['due_date']}...", flush=True)
                     self.db_manager.update_task_date(note_id, 'due_date', task_data['due_date'])
-                print(f"      → Task properties set", flush=True)
+                if verbose:
+                    print(f"      → Task properties set", flush=True)
 
                 # Set completion status if needed
                 if task_data['is_completed']:
@@ -246,7 +262,8 @@ class TodoistSync:
                         logger.warning(f"Could not set new task {note_id} to complete after {iterations} iterations")
 
                 # Create sync mapping
-                print(f"      → Creating sync mapping...", flush=True)
+                if verbose:
+                    print(f"      → Creating sync mapping...", flush=True)
                 logger.debug(f"Creating sync mapping for note {note_id} to Todoist ID {task_data['todoist_id']}")
                 self.db_manager.create_todoist_mapping(
                     note_id=note_id,
@@ -254,19 +271,24 @@ class TodoistSync:
                     todoist_project_id=task_data['todoist_project_id'],
                     todoist_parent_id=task_data['todoist_parent_id']
                 )
-                print(f"      → Sync mapping created", flush=True)
+                if verbose:
+                    print(f"      → Sync mapping created", flush=True)
 
             # Update sync timestamp
-            print(f"      → Updating sync timestamp...", flush=True)
+            if verbose:
+                print(f"      → Updating sync timestamp...", flush=True)
             self.db_manager.update_todoist_sync(note_id)
-            print(f"      → Sync timestamp updated", flush=True)
+            if verbose:
+                print(f"      → Sync timestamp updated", flush=True)
 
             logger.info(f"Synced task '{task.content}' (Todoist ID: {task.id}) to note {note_id}")
-            print(f"      → sync_task_from_todoist COMPLETE", flush=True)
+            if verbose:
+                print(f"      → sync_task_from_todoist COMPLETE", flush=True)
             return note_id
 
         except Exception as e:
-            print(f"      → !!! EXCEPTION in sync_task_from_todoist: {e}", flush=True)
+            if verbose:
+                print(f"      → !!! EXCEPTION in sync_task_from_todoist: {e}", flush=True)
             logger.error(f"Error syncing task '{task.content}' (ID: {task.id}): {e}", exc_info=True)
             import traceback
             traceback.print_exc()
@@ -337,25 +359,26 @@ class TodoistSync:
             print(f"[4] Starting task sync loop...", flush=True)
             for i, task in enumerate(tasks):
                 try:
-                    # Debug task type
-                    print(f"[4.{i+1}] Task type: {type(task)}", flush=True)
+                    # Show detailed debug only for first 3 tasks
+                    show_detail = i < 3
 
-                    # Check if task has content attribute
-                    if hasattr(task, 'content'):
-                        task_preview = task.content[:50]
-                    else:
-                        task_preview = str(task)[:50]
-
-                    print(f"[4.{i+1}] Syncing task {i+1}/{len(tasks)}: '{task_preview}...'", flush=True)
+                    if show_detail:
+                        print(f"[4.{i+1}] Syncing task {i+1}/{len(tasks)}: '{task.content[:50]}...'", flush=True)
 
                     if hasattr(task, 'content'):
                         logger.debug(f"Syncing task {i+1}/{len(tasks)}: {task.content}")
-                        self.sync_task_from_todoist(task, parent_note_id)
+                        self.sync_task_from_todoist(task, parent_note_id, verbose=show_detail)
                         synced += 1
-                        print(f"[4.{i+1}] ✓ Synced successfully", flush=True)
+                        if show_detail:
+                            print(f"[4.{i+1}] ✓ Synced successfully", flush=True)
                     else:
                         print(f"[4.{i+1}] ✗ Error: task is not a Task object, it's {type(task)}", flush=True)
                         errors += 1
+
+                    # Progress indicator for remaining tasks
+                    if not show_detail and (i + 1) % 10 == 0:
+                        print(f"[4] Progress: {i+1}/{len(tasks)} tasks synced...", flush=True)
+
                 except Exception as e:
                     print(f"[4.{i+1}] ✗ Error: {e}", flush=True)
                     task_id = getattr(task, 'id', 'unknown')
