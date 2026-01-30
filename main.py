@@ -1587,7 +1587,9 @@ class NoteTreeWidget(QTreeWidget):
                 if direction > 0:
                     target_parent = self.get_indent_target_parent(item)
                     if target_parent:
-                        self.db.move_note(item.note_id, target_parent.note_id, target_parent.childCount())
+                        # Use database child count, not UI childCount() which may be incomplete due to lazy loading
+                        end_position = self.db.get_next_child_position(target_parent.note_id)
+                        self.db.move_note(item.note_id, target_parent.note_id, end_position)
                 else:
                     self.outdent_note_db_only(item)
             
