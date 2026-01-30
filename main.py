@@ -368,7 +368,7 @@ class NoEllipsisDelegate(QStyledItemDelegate):
         # Calculate proper height for wrapped text
         widget = self.parent()
         if widget and hasattr(widget, 'columnWidth'):
-            available_width = widget.columnWidth(0) - 60  # Leave room for decorations
+            available_width = int((widget.columnWidth(0) - 60) * 0.8)  # Leave room for decorations
             if available_width > 0:
                 font_metrics = QFontMetrics(option.font)
                 text_rect = font_metrics.boundingRect(
