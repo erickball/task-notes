@@ -351,32 +351,44 @@ class EditableTreeItem(QTreeWidgetItem):
 
 class NoEllipsisDelegate(QStyledItemDelegate):
     """Custom delegate to prevent text eliding and ensure proper wrapping"""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-    
+        self.debug_enabled = True  # Set to False to disable debug output
+
     def sizeHint(self, option, index):
         """Calculate the size needed for the item"""
         # Get the default size hint
         size = super().sizeHint(option, index)
-        
+
         # Get the text content
         text = index.data(Qt.ItemDataRole.DisplayRole)
         if not text:
             return size
-        
+
         # Calculate proper height for wrapped text
         widget = self.parent()
         if widget and hasattr(widget, 'columnWidth'):
-            available_width = int((widget.columnWidth(0) - 60) * 0.8)  # Leave room for decorations
+            column_width = widget.columnWidth(0)
+            available_width = int((column_width - 60) * 0.8)  # Leave room for decorations
             if available_width > 0:
                 font_metrics = QFontMetrics(option.font)
                 text_rect = font_metrics.boundingRect(
                     0, 0, available_width, 0,
                     Qt.TextFlag.TextWordWrap, text
                 )
-                size.setHeight(max(size.height(), text_rect.height() + 10))  # Add padding
-        
+                calculated_height = text_rect.height() + 10
+                final_height = max(size.height(), calculated_height)
+
+                # Debug output
+                if self.debug_enabled and len(text) > 50:  # Only show for longer text
+                    print(f"[SizeHint Debug] text='{text[:30]}...'")
+                    print(f"  column_width={column_width}, available_width={available_width}")
+                    print(f"  text_rect: w={text_rect.width()}, h={text_rect.height()}")
+                    print(f"  default_height={size.height()}, calculated={calculated_height}, final={final_height}")
+
+                size.setHeight(final_height)
+
         return size
     
     def paint(self, painter, option, index):
@@ -463,7 +475,13 @@ class NoteTreeWidget(QTreeWidget):
         # Clipboard for cut/copy/paste operations
         self.clipboard_notes = []
         self.clipboard_operation = None  # 'cut' or 'copy'
-        
+
+    def refresh_layout(self):
+        """Refresh the tree layout to recalculate size hints after resize"""
+        # Schedule a layout update to recalculate row heights
+        self.scheduleDelayedItemsLayout()
+        self.updateGeometries()
+
     def load_tree(self, focus_root_id: int = None):
         """Load the tree from database, optionally focused on a subtree"""
         if focus_root_id is not None:
@@ -2603,7 +2621,10 @@ class MainWindow(QMainWindow):
         # Set initial splitter proportions - wider side panel for task table
         splitter.setSizes([600, 600])  # More space for right panel with task table
         right_splitter.setSizes([150, 150, 100])  # Space for details, tasks, and history
-        
+
+        # Connect splitter movement to refresh tree layout (for text wrap recalculation)
+        splitter.splitterMoved.connect(self.on_splitter_moved)
+
         # Connect tree selection to details update
         self.tree_widget.itemSelectionChanged.connect(self.update_details_panel)
         
@@ -2748,7 +2769,17 @@ class MainWindow(QMainWindow):
         """Handle tree focus change - update breadcrumbs"""
         # Use QTimer to prevent potential signal loops
         QTimer.singleShot(0, lambda: self.update_breadcrumbs(focused_root_id))
-    
+
+    def on_splitter_moved(self, pos, index):
+        """Handle splitter movement - refresh tree layout for text wrap recalculation"""
+        self.tree_widget.refresh_layout()
+
+    def resizeEvent(self, event):
+        """Handle window resize - refresh tree layout for text wrap recalculation"""
+        super().resizeEvent(event)
+        if hasattr(self, 'tree_widget'):
+            self.tree_widget.refresh_layout()
+
     def update_breadcrumbs(self, focused_root_id):
         """Update the breadcrumb navigation"""
         # Clear existing breadcrumb buttons
