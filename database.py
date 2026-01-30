@@ -253,7 +253,16 @@ class DatabaseManager:
                 ORDER BY n.position, n.id
             """, (parent_id,))
             return [dict(row) for row in cursor.fetchall()]
-    
+
+    def get_next_child_position(self, parent_id: int) -> int:
+        """Get the next available position for a new child of the given parent"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM notes WHERE parent_id = ?",
+                (parent_id,)
+            )
+            return cursor.fetchone()[0]
+
     def create_note(self, parent_id: int, content: str = "", position: int = None) -> int:
         """Create a new note"""
         with sqlite3.connect(self.db_path) as conn:
