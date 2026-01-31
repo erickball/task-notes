@@ -370,7 +370,19 @@ class NoEllipsisDelegate(QStyledItemDelegate):
         widget = self.parent()
         if widget and hasattr(widget, 'columnWidth'):
             column_width = widget.columnWidth(0)
-            available_width = int((column_width - 60) * 0.8)  # Leave room for decorations
+
+            # Calculate item depth for indentation
+            depth = 0
+            parent_index = index.parent()
+            while parent_index.isValid():
+                depth += 1
+                parent_index = parent_index.parent()
+
+            # Base padding (60) + indentation per depth level (~20px per level)
+            indent_per_level = widget.indentation() if hasattr(widget, 'indentation') else 20
+            total_indent = 60 + (depth * indent_per_level)
+            available_width = column_width - total_indent
+
             if available_width > 0:
                 font_metrics = QFontMetrics(option.font)
                 text_rect = font_metrics.boundingRect(
@@ -383,7 +395,7 @@ class NoEllipsisDelegate(QStyledItemDelegate):
                 # Debug output
                 if self.debug_enabled and len(text) > 50:  # Only show for longer text
                     print(f"[SizeHint Debug] text='{text[:30]}...'")
-                    print(f"  column_width={column_width}, available_width={available_width}")
+                    print(f"  column_width={column_width}, depth={depth}, total_indent={total_indent}, available_width={available_width}")
                     print(f"  text_rect: w={text_rect.width()}, h={text_rect.height()}")
                     print(f"  default_height={size.height()}, calculated={calculated_height}, final={final_height}")
 
@@ -4355,7 +4367,18 @@ class MainWindow(QMainWindow):
         try:
             widget = self.tree_widget
             column_width = widget.columnWidth(0)
-            available_width = int((column_width - 60) * 0.8)
+
+            # Calculate item depth
+            depth = 0
+            parent = item.parent()
+            while parent:
+                depth += 1
+                parent = parent.parent()
+
+            # Match the calculation in NoEllipsisDelegate.sizeHint
+            indent_per_level = widget.indentation()
+            total_indent = 60 + (depth * indent_per_level)
+            available_width = column_width - total_indent
 
             # Get font metrics from the tree widget
             font = widget.font()
@@ -4369,8 +4392,9 @@ class MainWindow(QMainWindow):
             item_rect = widget.visualItemRect(item)
 
             debug_text = (
-                f"column_width: {column_width}\n"
-                f"available_width: {available_width} ((col-60)*0.8)\n"
+                f"column_width: {column_width}, depth: {depth}\n"
+                f"indent_per_level: {indent_per_level}, total_indent: {total_indent}\n"
+                f"available_width: {available_width} (col - total_indent)\n"
                 f"text_rect: w={text_rect.width()}, h={text_rect.height()}\n"
                 f"calculated_height: {text_rect.height() + 10} (text_h+10)\n"
                 f"actual_item_rect: w={item_rect.width()}, h={item_rect.height()}\n"
