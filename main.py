@@ -2773,12 +2773,25 @@ class MainWindow(QMainWindow):
     def on_splitter_moved(self, pos, index):
         """Handle splitter movement - refresh tree layout for text wrap recalculation"""
         self.tree_widget.refresh_layout()
+        self.refresh_size_debug_info()
 
     def resizeEvent(self, event):
         """Handle window resize - refresh tree layout for text wrap recalculation"""
         super().resizeEvent(event)
         if hasattr(self, 'tree_widget'):
             self.tree_widget.refresh_layout()
+            self.refresh_size_debug_info()
+
+    def refresh_size_debug_info(self):
+        """Refresh the size debug info for the currently selected item"""
+        if not hasattr(self, 'detail_debug_label'):
+            return
+        selected_items = [item for item in self.tree_widget.selectedItems()
+                         if isinstance(item, EditableTreeItem)]
+        if len(selected_items) == 1:
+            item = selected_items[0]
+            content = item.note_data.get('content', '')
+            self.update_size_debug_info(item, content)
 
     def update_breadcrumbs(self, focused_root_id):
         """Update the breadcrumb navigation"""
