@@ -354,7 +354,7 @@ class NoEllipsisDelegate(QStyledItemDelegate):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.debug_enabled = False  # Set to True to enable console debug output
+        self.debug_enabled = True  # Set to True to enable console debug output
 
     def sizeHint(self, option, index):
         """Calculate the size needed for the item"""
