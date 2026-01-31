@@ -379,8 +379,9 @@ class NoEllipsisDelegate(QStyledItemDelegate):
                 parent_index = parent_index.parent()
 
             # Base padding (60) + indentation per depth level (~20px per level)
+            # Add small safety margin (5px) to account for render vs calculation discrepancy
             indent_per_level = widget.indentation() if hasattr(widget, 'indentation') else 20
-            total_indent = 60 + (depth * indent_per_level)
+            total_indent = 60 + (depth * indent_per_level) + 5  # +5 safety margin
             available_width = column_width - total_indent
 
             if available_width > 0:
@@ -4377,7 +4378,7 @@ class MainWindow(QMainWindow):
 
             # Match the calculation in NoEllipsisDelegate.sizeHint
             indent_per_level = widget.indentation()
-            total_indent = 60 + (depth * indent_per_level)
+            total_indent = 60 + (depth * indent_per_level) + 5  # +5 safety margin
             available_width = column_width - total_indent
 
             # Get font metrics from the tree widget
