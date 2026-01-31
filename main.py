@@ -354,7 +354,7 @@ class NoEllipsisDelegate(QStyledItemDelegate):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.debug_enabled = True  # Set to False to disable debug output
+        self.debug_enabled = False  # Set to True to enable console debug output
 
     def sizeHint(self, option, index):
         """Calculate the size needed for the item"""
@@ -3774,7 +3774,13 @@ class MainWindow(QMainWindow):
         # Connect click events to handle image zoom
         self.detail_content.mousePressEvent = self.handle_detail_content_click
         layout.addWidget(self.detail_content)
-        
+
+        # Debug info for text box height calculation
+        self.detail_debug_label = QLabel("Size Debug: -")
+        self.detail_debug_label.setWordWrap(True)
+        self.detail_debug_label.setStyleSheet("font-family: monospace; font-size: 11px; color: #666; background-color: #f0f0f0; padding: 5px; border-radius: 3px;")
+        layout.addWidget(self.detail_debug_label)
+
         layout.addStretch()
         
         widget.setStyleSheet("""
@@ -4291,7 +4297,10 @@ class MainWindow(QMainWindow):
             # Count children
             children = self.db.get_children(note_data['id'])
             self.detail_children_label.setText(f"Children: {len(children)} | ID: {note_data['id']}")
-            
+
+            # Calculate and display debug info for text box height
+            self.update_size_debug_info(item, content)
+
         elif len(selected_items) > 1:
             # Multiple selection
             self.detail_path_label.setText("Multiple notes selected")
@@ -4304,6 +4313,7 @@ class MainWindow(QMainWindow):
             self.task_fields_widget.hide()
             self.detail_content.setText("")
             self.detail_children_label.setText("Children: -")
+            self.detail_debug_label.setText("Size Debug: -")
             self.current_task_id = None
         else:
             # No selection
@@ -4317,11 +4327,42 @@ class MainWindow(QMainWindow):
             self.task_fields_widget.hide()
             self.detail_content.setText("")
             self.detail_children_label.setText("Children: -")
+            self.detail_debug_label.setText("Size Debug: -")
             self.current_task_id = None
         
         # Update task dashboard
         self.update_task_dashboard()
-    
+
+    def update_size_debug_info(self, item, text):
+        """Calculate and display debug info for text box height calculation"""
+        try:
+            widget = self.tree_widget
+            column_width = widget.columnWidth(0)
+            available_width = int((column_width - 60) * 0.8)
+
+            # Get font metrics from the tree widget
+            font = widget.font()
+            font_metrics = QFontMetrics(font)
+            text_rect = font_metrics.boundingRect(
+                0, 0, available_width, 0,
+                Qt.TextFlag.TextWordWrap, text
+            )
+
+            # Get the actual item rect from the tree
+            item_rect = widget.visualItemRect(item)
+
+            debug_text = (
+                f"column_width: {column_width}\n"
+                f"available_width: {available_width} ((col-60)*0.8)\n"
+                f"text_rect: w={text_rect.width()}, h={text_rect.height()}\n"
+                f"calculated_height: {text_rect.height() + 10} (text_h+10)\n"
+                f"actual_item_rect: w={item_rect.width()}, h={item_rect.height()}\n"
+                f"text_length: {len(text)} chars"
+            )
+            self.detail_debug_label.setText(debug_text)
+        except Exception as e:
+            self.detail_debug_label.setText(f"Size Debug Error: {e}")
+
     def on_task_checkbox_changed(self):
         """Handle task checkbox state changes"""
         # Prevent loops during programmatic updates
