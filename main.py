@@ -354,7 +354,7 @@ class NoEllipsisDelegate(QStyledItemDelegate):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.debug_enabled = True  # Set to True to enable console debug output
+        self.debug_enabled = False  # Set to True to enable console debug output
 
     def sizeHint(self, option, index):
         """Calculate the size needed for the item"""
@@ -378,9 +378,9 @@ class NoEllipsisDelegate(QStyledItemDelegate):
                 depth += 1
                 parent_index = parent_index.parent()
 
-            # Base padding (45) + indentation per depth level (~20px per level)
+            # Base padding (34) + indentation per depth level (~20px per level)
             indent_per_level = widget.indentation() if hasattr(widget, 'indentation') else 20
-            total_indent = 45 + (depth * indent_per_level)
+            total_indent = 34 + (depth * indent_per_level)
             available_width = column_width - total_indent
 
             if available_width > 0:
@@ -2789,25 +2789,12 @@ class MainWindow(QMainWindow):
     def on_splitter_moved(self, pos, index):
         """Handle splitter movement - refresh tree layout for text wrap recalculation"""
         self.tree_widget.refresh_layout()
-        self.refresh_size_debug_info()
 
     def resizeEvent(self, event):
         """Handle window resize - refresh tree layout for text wrap recalculation"""
         super().resizeEvent(event)
         if hasattr(self, 'tree_widget'):
             self.tree_widget.refresh_layout()
-            self.refresh_size_debug_info()
-
-    def refresh_size_debug_info(self):
-        """Refresh the size debug info for the currently selected item"""
-        if not hasattr(self, 'detail_debug_label'):
-            return
-        selected_items = [item for item in self.tree_widget.selectedItems()
-                         if isinstance(item, EditableTreeItem)]
-        if len(selected_items) == 1:
-            item = selected_items[0]
-            content = item.note_data.get('content', '')
-            self.update_size_debug_info(item, content)
 
     def update_breadcrumbs(self, focused_root_id):
         """Update the breadcrumb navigation"""
@@ -3804,12 +3791,6 @@ class MainWindow(QMainWindow):
         self.detail_content.mousePressEvent = self.handle_detail_content_click
         layout.addWidget(self.detail_content)
 
-        # Debug info for text box height calculation
-        self.detail_debug_label = QLabel("Size Debug: -")
-        self.detail_debug_label.setWordWrap(True)
-        self.detail_debug_label.setStyleSheet("font-family: monospace; font-size: 11px; color: #666; background-color: #f0f0f0; padding: 5px; border-radius: 3px;")
-        layout.addWidget(self.detail_debug_label)
-
         layout.addStretch()
         
         widget.setStyleSheet("""
@@ -4327,9 +4308,6 @@ class MainWindow(QMainWindow):
             children = self.db.get_children(note_data['id'])
             self.detail_children_label.setText(f"Children: {len(children)} | ID: {note_data['id']}")
 
-            # Calculate and display debug info for text box height
-            self.update_size_debug_info(item, content)
-
         elif len(selected_items) > 1:
             # Multiple selection
             self.detail_path_label.setText("Multiple notes selected")
@@ -4342,7 +4320,6 @@ class MainWindow(QMainWindow):
             self.task_fields_widget.hide()
             self.detail_content.setText("")
             self.detail_children_label.setText("Children: -")
-            self.detail_debug_label.setText("Size Debug: -")
             self.current_task_id = None
         else:
             # No selection
@@ -4356,53 +4333,10 @@ class MainWindow(QMainWindow):
             self.task_fields_widget.hide()
             self.detail_content.setText("")
             self.detail_children_label.setText("Children: -")
-            self.detail_debug_label.setText("Size Debug: -")
             self.current_task_id = None
-        
+
         # Update task dashboard
         self.update_task_dashboard()
-
-    def update_size_debug_info(self, item, text):
-        """Calculate and display debug info for text box height calculation"""
-        try:
-            widget = self.tree_widget
-            column_width = widget.columnWidth(0)
-
-            # Calculate item depth
-            depth = 0
-            parent = item.parent()
-            while parent:
-                depth += 1
-                parent = parent.parent()
-
-            # Match the calculation in NoEllipsisDelegate.sizeHint
-            indent_per_level = widget.indentation()
-            total_indent = 45 + (depth * indent_per_level)
-            available_width = column_width - total_indent
-
-            # Get font metrics from the tree widget
-            font = widget.font()
-            font_metrics = QFontMetrics(font)
-            text_rect = font_metrics.boundingRect(
-                0, 0, available_width, 0,
-                Qt.TextFlag.TextWordWrap, text
-            )
-
-            # Get the actual item rect from the tree
-            item_rect = widget.visualItemRect(item)
-
-            debug_text = (
-                f"column_width: {column_width}, depth: {depth}\n"
-                f"indent_per_level: {indent_per_level}, total_indent: {total_indent}\n"
-                f"available_width: {available_width} (col - total_indent)\n"
-                f"text_rect: w={text_rect.width()}, h={text_rect.height()}\n"
-                f"calculated_height: {text_rect.height() + 10} (text_h+10)\n"
-                f"actual_item_rect: w={item_rect.width()}, h={item_rect.height()}\n"
-                f"text_length: {len(text)} chars"
-            )
-            self.detail_debug_label.setText(debug_text)
-        except Exception as e:
-            self.detail_debug_label.setText(f"Size Debug Error: {e}")
 
     def on_task_checkbox_changed(self):
         """Handle task checkbox state changes"""
