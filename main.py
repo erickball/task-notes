@@ -2617,7 +2617,11 @@ class MainWindow(QMainWindow):
         # Store references for panel toggling
         self.main_splitter = splitter
         self.right_splitter = right_splitter
-        
+
+        # Set stretch factors: left pane gets all extra space, right pane stays fixed size
+        splitter.setStretchFactor(0, 1)  # Left panel stretches
+        splitter.setStretchFactor(1, 0)  # Right panel stays fixed
+
         # Set initial splitter proportions - wider side panel for task table
         splitter.setSizes([600, 600])  # More space for right panel with task table
         right_splitter.setSizes([150, 150, 100])  # Space for details, tasks, and history
