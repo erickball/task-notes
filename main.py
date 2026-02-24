@@ -428,6 +428,7 @@ class NoteTreeWidget(QTreeWidget):
         self.setWordWrap(True)  # Enable word wrapping for long text
         self.setUniformRowHeights(False)  # Allow variable row heights for wrapped text
         self.setTextElideMode(Qt.TextElideMode.ElideNone)  # Don't elide text, let it wrap instead
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)  # Smooth scrolling instead of jumping per item
         
         # Configure header to prevent ellipsis
         header = self.header()
