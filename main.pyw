@@ -1316,6 +1316,12 @@ class NoteTreeWidget(QTreeWidget):
             current_height = self.edit_widget.geometry().height()
             text_rect.setHeight(max(current_height, text_rect.height()))
             self.edit_widget.setGeometry(text_rect)
+            # Hide edit widget when the item scrolls out of the visible viewport
+            viewport_rect = self.viewport().rect()
+            if text_rect.bottom() < viewport_rect.top() or text_rect.top() > viewport_rect.bottom():
+                self.edit_widget.hide()
+            else:
+                self.edit_widget.show()
 
     def on_text_changed(self):
         """Handle text changes to resize edit widget"""
