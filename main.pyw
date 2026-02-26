@@ -428,6 +428,7 @@ class NoteTreeWidget(QTreeWidget):
         self.setWordWrap(True)  # Enable word wrapping for long text
         self.setUniformRowHeights(False)  # Allow variable row heights for wrapped text
         self.setTextElideMode(Qt.TextElideMode.ElideNone)  # Don't elide text, let it wrap instead
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)  # Smooth scrolling instead of jumping per item
         
         # Configure header to prevent ellipsis
         header = self.header()
@@ -1305,11 +1306,28 @@ class NoteTreeWidget(QTreeWidget):
         except Exception as e:
             print(f"Error updating task fields: {e}")
     
+    def scrollContentsBy(self, dx, dy):
+        """Reposition edit widget when the tree view scrolls"""
+        super().scrollContentsBy(dx, dy)
+        if self.edit_widget and self.editing_item:
+            rect = self.visualItemRect(self.editing_item)
+            text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
+            # Preserve the current height (may have been resized by on_text_changed)
+            current_height = self.edit_widget.geometry().height()
+            text_rect.setHeight(max(current_height, text_rect.height()))
+            self.edit_widget.setGeometry(text_rect)
+            # Hide edit widget when the item scrolls out of the visible viewport
+            viewport_rect = self.viewport().rect()
+            if text_rect.bottom() < viewport_rect.top() or text_rect.top() > viewport_rect.bottom():
+                self.edit_widget.hide()
+            else:
+                self.edit_widget.show()
+
     def on_text_changed(self):
         """Handle text changes to resize edit widget"""
         if not self.edit_widget:
             return
-        
+
         # Auto-resize height based on content
         doc = self.edit_widget.document()
         height = int(doc.size().height()) + 10
