@@ -2666,9 +2666,10 @@ class MainWindow(QMainWindow):
         self.task_dashboard = self.create_task_dashboard()
         right_splitter.addWidget(self.task_dashboard)
         
-        # Create history panel
+        # Create history panel (hidden by default; toggled from the View menu)
         self.history_panel = self.create_history_panel()
         right_splitter.addWidget(self.history_panel)
+        self.history_panel.hide()
         
         # Store references for panel toggling
         self.main_splitter = splitter
@@ -3609,7 +3610,7 @@ class MainWindow(QMainWindow):
         
         self.history_pane_action = QAction("Show History Pane", self)
         self.history_pane_action.setCheckable(True)
-        self.history_pane_action.setChecked(True)
+        self.history_pane_action.setChecked(False)  # History pane hidden by default
         self.history_pane_action.triggered.connect(self.toggle_history_pane)
         view_menu.addAction(self.history_pane_action)
         
