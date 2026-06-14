@@ -1787,28 +1787,45 @@ class NoteTreeWidget(QTreeWidget):
                     pass
     
     def outdent_note_db_only(self, item):
-        """Move note to parent's level using database only (for tree reload approach)"""
+        """Move note to parent's level using database only (for tree reload approach).
+
+        Standard-outliner behavior: the note's former following siblings (the notes
+        below it under the same parent) are re-parented to become its children, so
+        the note keeps its exact vertical position in the outline instead of jumping
+        below them.
+        """
         if not isinstance(item, EditableTreeItem):
             return
-        
+
         # Get the current note data from database
         note_data = self.db.get_note(item.note_id)
         if not note_data:
             return
-        
+
         current_parent_id = note_data['parent_id']
         if current_parent_id == 1:  # Already at root level
             return
-        
+
         # Get parent data
         parent_data = self.db.get_note(current_parent_id)
         if not parent_data:
             return
-        
+
         grandparent_id = parent_data['parent_id']
         if grandparent_id is None:  # Parent is root, can't outdent further
             return
-        
+
+        # Capture the following siblings (notes positioned after this one under the
+        # old parent) BEFORE moving anything, preserving their order.
+        following_sibling_ids = []
+        seen_self = False
+        for sib in self.db.get_children(current_parent_id):
+            if sib['id'] == item.note_id:
+                seen_self = True
+                continue
+            if seen_self:
+                following_sibling_ids.append(sib['id'])
+
         # Find position to insert after parent
         grandparent_children = self.db.get_children(grandparent_id)
         parent_position = -1
@@ -1816,10 +1833,19 @@ class NoteTreeWidget(QTreeWidget):
             if child['id'] == current_parent_id:
                 parent_position = i
                 break
-        
-        if parent_position >= 0:
-            # Move to grandparent, after parent
-            self.db.move_note(item.note_id, grandparent_id, parent_position + 1)
+
+        if parent_position < 0:
+            return
+
+        # Move to grandparent, after parent
+        self.db.move_note(item.note_id, grandparent_id, parent_position + 1)
+
+        # Re-parent the former following siblings as children of this note, appended
+        # in their original order (after any existing children) so the visible
+        # vertical order of the outline is preserved.
+        for sib_id in following_sibling_ids:
+            end_position = self.db.get_next_child_position(item.note_id)
+            self.db.move_note(sib_id, item.note_id, end_position)
     
     def move_note_to_parent(self, item, new_parent_item, position):
         """Move a note to a new parent at specific position"""
@@ -2676,10 +2702,19 @@ class MainWindow(QMainWindow):
         # Initialize task reminder system
         self.reminder_notifications = []  # Track active reminder notifications
         self.dismissed_reminders = set()  # Track dismissed task IDs (cleared daily)
+        self.snoozed_reminders = {}  # task_id -> datetime to suppress until (auto-dismiss snooze)
         self.last_reminder_reset = datetime.now().date()  # Track when we last reset dismissed reminders
         self.reminder_timer = QTimer()
         self.reminder_timer.timeout.connect(self.check_task_reminders)
         self.reminder_timer.start(60000)  # Check every minute
+
+        # Reposition any visible reminders when the screen layout changes (e.g. a
+        # monitor is disconnected) so they can't get stranded off-screen.
+        app = QApplication.instance()
+        for signal_name in ('screenAdded', 'screenRemoved', 'primaryScreenChanged'):
+            signal = getattr(app, signal_name, None)
+            if signal is not None:
+                signal.connect(lambda *_: self.reposition_reminder_notifications())
         
         # Check reminders on startup
         QTimer.singleShot(5000, self.check_task_reminders)  # Wait 5 seconds after startup
@@ -5664,6 +5699,7 @@ class MainWindow(QMainWindow):
             today = datetime.now().date()
             if today > self.last_reminder_reset:
                 self.dismissed_reminders.clear()
+                self.snoozed_reminders.clear()
                 self.last_reminder_reset = today
 
             # Get all active tasks
@@ -5690,6 +5726,10 @@ class MainWindow(QMainWindow):
                     # Check if task is due within 24 hours and not already reminded
                     if now <= due_dt <= reminder_threshold:
                         task_id = task['id']
+                        # Skip tasks that were auto-dismissed recently (still snoozed)
+                        snooze_until = self.snoozed_reminders.get(task_id)
+                        if snooze_until is not None and now < snooze_until:
+                            continue
                         # Check if we already have a notification for this task OR it was dismissed
                         if (task_id not in self.dismissed_reminders and
                             not any(notif.task_id == task_id for notif in self.reminder_notifications)):
@@ -5705,16 +5745,38 @@ class MainWindow(QMainWindow):
         """Show a subtle reminder notification for a task"""
         notification = TaskReminderNotification(task, self)
         notification.dismissed.connect(lambda: self.remove_reminder_notification(notification))
+        notification.snoozed.connect(lambda: self.snooze_reminder_notification(notification))
         self.reminder_notifications.append(notification)
         notification.show()
-        notification.position_in_corner()
-    
+        notification.position_in_corner(len(self.reminder_notifications) - 1)
+
     def remove_reminder_notification(self, notification):
         """Remove a reminder notification from tracking and mark as dismissed"""
         if notification in self.reminder_notifications:
             self.reminder_notifications.remove(notification)
             # Mark this task as dismissed so it won't show again today
             self.dismissed_reminders.add(notification.task_id)
+        self.reposition_reminder_notifications()
+
+    def snooze_reminder_notification(self, notification):
+        """Auto-dismissed (timed out) reminder: hide it but allow it to reappear
+        later instead of lingering on screen forever."""
+        if notification in self.reminder_notifications:
+            self.reminder_notifications.remove(notification)
+            # Suppress this task briefly so it doesn't immediately pop back up on
+            # the next check, but can still remind again before it's due.
+            self.snoozed_reminders[notification.task_id] = datetime.now() + timedelta(minutes=30)
+        self.reposition_reminder_notifications()
+
+    def reposition_reminder_notifications(self):
+        """Re-place all active reminder notifications onto a visible screen.
+
+        Called when one is removed or when the screen layout changes so that
+        notifications can't get stranded off-screen (e.g. after a monitor is
+        disconnected) and so the stack stays tidy after one is dismissed.
+        """
+        for index, notification in enumerate(self.reminder_notifications):
+            notification.position_in_corner(index)
     
     def closeEvent(self, event):
         """Handle application closing"""
@@ -5739,17 +5801,27 @@ class TaskReminderNotification(QWidget):
     """Subtle task reminder notification widget"""
     
     dismissed = pyqtSignal()
-    
+    snoozed = pyqtSignal()
+
     def __init__(self, task, parent=None):
         super().__init__(parent)
         self.task = task
         self.task_id = task['id']
         self.parent_window = parent
-        
+        self._closed = False
+
         # Configure window
         self.setWindowFlags(Qt.WindowType.ToolTip | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setFixedSize(300, 80)
+
+        # Auto-dismiss so a reminder never lingers on top of everything forever
+        # (e.g. if it ends up off-screen and can't be clicked). It will be allowed
+        # to reappear later via the snooze mechanism rather than being gone for good.
+        self.auto_dismiss_timer = QTimer(self)
+        self.auto_dismiss_timer.setSingleShot(True)
+        self.auto_dismiss_timer.timeout.connect(self.snooze)
+        self.auto_dismiss_timer.start(20000)  # 20 seconds
         
         # Create layout
         layout = QVBoxLayout(self)
@@ -5844,19 +5916,38 @@ class TaskReminderNotification(QWidget):
         container_layout.addLayout(button_layout)
         layout.addWidget(container)
     
-    def position_in_corner(self):
-        """Position the notification in the bottom-right corner of the parent window"""
-        if self.parent_window:
-            parent_rect = self.parent_window.geometry()
-            x = parent_rect.right() - self.width() - 20
-            y = parent_rect.bottom() - self.height() - 20
-            self.move(x, y)
-        else:
-            # Fallback to screen corner
-            screen = QApplication.primaryScreen().geometry()
-            x = screen.width() - self.width() - 20
-            y = screen.height() - self.height() - 100
-            self.move(x, y)
+    def position_in_corner(self, index=0):
+        """Position the notification at the bottom-right of a visible screen.
+
+        The position is always clamped to the target screen's available geometry,
+        so the widget (and its dismiss button) can never end up off-screen — for
+        example after a monitor is disconnected. Multiple notifications stack
+        upward via ``index``.
+        """
+        # Pick the screen the app window is on; fall back to the primary screen if
+        # the app window is itself off-screen (e.g. its monitor was disconnected).
+        screen = None
+        if self.parent_window is not None:
+            try:
+                screen = QApplication.screenAt(self.parent_window.frameGeometry().center())
+            except Exception:
+                screen = None
+        if screen is None:
+            screen = QApplication.primaryScreen()
+        if screen is None:
+            return
+
+        avail = screen.availableGeometry()
+        margin = 20
+        spacing = 10
+
+        x = avail.right() - self.width() - margin
+        y = avail.bottom() - self.height() - margin - index * (self.height() + spacing)
+
+        # Clamp fully inside the available geometry so it stays clickable.
+        x = max(avail.left() + margin, min(x, avail.right() - self.width() - margin))
+        y = max(avail.top() + margin, min(y, avail.bottom() - self.height() - margin))
+        self.move(x, y)
     
     def view_task(self):
         """Navigate to the task and dismiss notification"""
@@ -5867,8 +5958,22 @@ class TaskReminderNotification(QWidget):
         self.dismiss()
     
     def dismiss(self):
-        """Dismiss the notification"""
+        """Dismiss the notification for the rest of the day."""
+        if self._closed:
+            return
+        self._closed = True
+        self.auto_dismiss_timer.stop()
         self.dismissed.emit()
+        self.close()
+
+    def snooze(self):
+        """Auto-hide the reminder (timed out) without dismissing it for the day;
+        it can be shown again later instead of lingering on screen."""
+        if self._closed:
+            return
+        self._closed = True
+        self.auto_dismiss_timer.stop()
+        self.snoozed.emit()
         self.close()
 
 
