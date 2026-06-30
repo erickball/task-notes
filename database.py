@@ -439,14 +439,14 @@ class DatabaseManager:
         """Move a note to a new parent at specific position"""
         # print(f"    DB: move_note({note_id}, parent={new_parent_id}, pos={new_position})")  # Debug disabled
         with sqlite3.connect(self.db_path) as conn:
-            # Get current note info
-            cursor = conn.execute("SELECT parent_id, position FROM notes WHERE id = ?", (note_id,))
+            # Get current note info including the OLD path before moving
+            cursor = conn.execute("SELECT parent_id, position, path FROM notes WHERE id = ?", (note_id,))
             current = cursor.fetchone()
             if not current:
                 raise ValueError(f"Note {note_id} not found")
-            
-            old_parent_id, old_position = current
-            
+
+            old_parent_id, old_position, old_path = current
+
             # Get new parent info for path and depth
             cursor = conn.execute("SELECT path, depth FROM notes WHERE id = ?", (new_parent_id,))
             parent = cursor.fetchone()
@@ -489,27 +489,30 @@ class DatabaseManager:
             # Update the note itself
             new_path = f"{parent[0]}.{note_id}"
             new_depth = parent[1] + 1
-            
+
             conn.execute("""
-                UPDATE notes 
+                UPDATE notes
                 SET parent_id = ?, position = ?, path = ?, depth = ?, modified_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (new_parent_id, new_position, new_path, new_depth, note_id))
-            
-            # Update paths of all descendant notes
-            cursor = conn.execute("SELECT id FROM notes WHERE path LIKE ? ORDER BY path", (f"{new_path}.%",))
+
+            # Update paths of all descendant notes using the OLD path pattern
+            cursor = conn.execute("SELECT id FROM notes WHERE path LIKE ? ORDER BY path", (f"{old_path}.%",))
             descendants = cursor.fetchall()
-            
+
             for (desc_id,) in descendants:
                 cursor = conn.execute("SELECT path, parent_id FROM notes WHERE id = ?", (desc_id,))
                 desc_path, desc_parent_id = cursor.fetchone()
-                
+
+                # Replace the old path prefix with the new path prefix
+                new_desc_path = desc_path.replace(old_path, new_path, 1)
+
                 # Get parent depth
                 cursor = conn.execute("SELECT depth FROM notes WHERE id = ?", (desc_parent_id,))
                 parent_depth = cursor.fetchone()[0]
-                
+
                 new_desc_depth = parent_depth + 1
-                conn.execute("UPDATE notes SET depth = ? WHERE id = ?", (new_desc_depth, desc_id))
+                conn.execute("UPDATE notes SET path = ?, depth = ? WHERE id = ?", (new_desc_path, new_desc_depth, desc_id))
             
             conn.commit()
             

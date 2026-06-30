@@ -869,30 +869,64 @@ class NoteTreeWidget(QTreeWidget):
         """Load children when item is expanded and save expansion state"""
         if not isinstance(item, EditableTreeItem):
             return
-            
+
         # Save expansion state
         self.db.save_expansion_state(item.note_id, True)
-        
+
         # Check if this item has dummy children that need to be replaced
-        if (item.childCount() == 1 and 
+        if (item.childCount() == 1 and
             item.child(0).text(0) == "Loading..."):
             # Remove dummy children and load real ones
             while item.childCount() > 0:
                 item.removeChild(item.child(0))
-            
+
             # Calculate current depth
             depth = 0
             parent = item.parent()
             while parent:
                 depth += 1
                 parent = parent.parent()
-            
+
             self.load_children(item, item.note_id, depth)
+
+        # If we're editing an item that's a descendant of the expanded item, reposition and show the edit widget
+        if self.editing_item and self.edit_widget:
+            # Check if the editing item is now visible (descendant of expanded item)
+            parent = self.editing_item.parent()
+            while parent:
+                if parent == item:
+                    # The expanded item is an ancestor of the editing item
+                    # Recalculate position since the item may have moved
+                    rect = self.visualItemRect(self.editing_item)
+                    text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
+                    self.edit_widget.setGeometry(text_rect)
+                    self.edit_widget.show()
+                    break
+                parent = parent.parent()
     
     def on_item_collapsed(self, item):
-        """Save collapsed state"""
+        """Save collapsed state and hide edit widget if editing a descendant"""
         if isinstance(item, EditableTreeItem):
             self.db.save_expansion_state(item.note_id, False)
+
+            # If we're currently editing an item, check if it's the collapsed item or a descendant
+            if self.editing_item:
+                # Check if the editing item is the collapsed item itself or a descendant
+                if self.editing_item == item:
+                    # Collapsing the item we're editing - hide the edit widget
+                    if self.edit_widget:
+                        self.edit_widget.hide()
+                else:
+                    # Walk up the parent chain of the editing item
+                    parent = self.editing_item.parent()
+                    while parent:
+                        if parent == item:
+                            # The collapsed item is an ancestor of the editing item
+                            # Hide the edit widget (but don't save changes)
+                            if self.edit_widget:
+                                self.edit_widget.hide()
+                            break
+                        parent = parent.parent()
     
     def on_item_clicked(self, item, column):
         """Handle item clicks for editing"""
@@ -1310,6 +1344,21 @@ class NoteTreeWidget(QTreeWidget):
         """Reposition edit widget when the tree view scrolls"""
         super().scrollContentsBy(dx, dy)
         if self.edit_widget and self.editing_item:
+            # Check if the editing item is actually visible (not hidden by collapsed parent)
+            is_visible = not self.editing_item.isHidden()
+            if is_visible:
+                # Also check if any ancestor is collapsed
+                parent = self.editing_item.parent()
+                while parent:
+                    if isinstance(parent, EditableTreeItem) and not parent.isExpanded():
+                        is_visible = False
+                        break
+                    parent = parent.parent()
+
+            if not is_visible:
+                self.edit_widget.hide()
+                return
+
             rect = self.visualItemRect(self.editing_item)
             text_rect = QRect(rect.x() + 7, rect.y() + 4, rect.width() - 14, rect.height() - 8)
             # Preserve the current height (may have been resized by on_text_changed)
@@ -3021,6 +3070,8 @@ class MainWindow(QMainWindow):
             self.tree_widget.setCurrentItem(found_item)
             found_item.setSelected(True)
             self.tree_widget.scrollToItem(found_item)
+            # Ensure the tree widget has focus so the cursor is visible
+            self.tree_widget.setFocus()
             return
         
         # Not found in current view - get the note data to find its path
@@ -3038,12 +3089,29 @@ class MainWindow(QMainWindow):
         if note_path:
             # Parse path (e.g., "1.5.12" means root -> note 5 -> note 12)
             path_parts = note_path.split('.')
-            
+
             # Expand each parent node in sequence
             for i in range(len(path_parts) - 1):  # Don't expand the target note itself
                 parent_id = int(path_parts[i])
                 parent_item = self.find_item_in_tree(parent_id)
                 if parent_item:
+                    # Check if children need to be loaded (dummy "Loading..." child)
+                    if (parent_item.childCount() == 1 and
+                        parent_item.child(0).text(0) == "Loading..."):
+                        # Remove dummy child and load real children
+                        while parent_item.childCount() > 0:
+                            parent_item.removeChild(parent_item.child(0))
+
+                        # Calculate current depth for the load_children call
+                        depth = 0
+                        ancestor = parent_item.parent()
+                        while ancestor:
+                            depth += 1
+                            ancestor = ancestor.parent()
+
+                        # Load children explicitly
+                        self.tree_widget.load_children(parent_item, parent_id, depth)
+
                     parent_item.setExpanded(True)
                     # Save expansion state to database
                     self.db.save_expansion_state(parent_id, True)
@@ -3055,6 +3123,8 @@ class MainWindow(QMainWindow):
             self.tree_widget.setCurrentItem(found_item)
             found_item.setSelected(True)
             self.tree_widget.scrollToItem(found_item)
+            # Ensure the tree widget has focus so the cursor is visible
+            self.tree_widget.setFocus()
             return
         
         # Still not found - this shouldn't happen if the path is correct
@@ -4596,7 +4666,7 @@ class MainWindow(QMainWindow):
             note_id = first_column_item.data(Qt.ItemDataRole.UserRole)
             if note_id is None:
                 return
-            
+
             # Navigate to the note (only from task name column)
             self.find_and_select_note(note_id)
             
