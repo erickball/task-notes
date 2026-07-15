@@ -1150,18 +1150,20 @@ class NoteTreeWidget(QTreeWidget):
         self.edit_widget.setParent(self.viewport())
         self.edit_widget.show()
         self.edit_widget.setFocus()
-        
-        # Set cursor position at specific character
-        def set_cursor():
-            cursor = self.edit_widget.textCursor()
-            # Adjust position to account for task prefix and bounds
-            adjusted_pos = min(cursor_position, len(self.edit_widget.toPlainText()))
-            cursor.setPosition(adjusted_pos)
-            self.edit_widget.setTextCursor(cursor)
-        
-        # Use a timer to set cursor position after the widget is fully initialized
-        QTimer.singleShot(10, set_cursor)
-        
+
+        # Set cursor position at specific character. This must happen
+        # synchronously (not via a deferred QTimer) so the cursor is in place
+        # before any keystrokes queued during the indent/move operation are
+        # delivered. Deferring it left a window where the new widget had focus
+        # with the cursor at position 0, so queued keystrokes landed at the
+        # start of the note and later jumped when the timer fired. Unlike
+        # click-based positioning, a character index needs no layout pass.
+        cursor = self.edit_widget.textCursor()
+        # Adjust position to account for task prefix and bounds
+        adjusted_pos = min(cursor_position, len(self.edit_widget.toPlainText()))
+        cursor.setPosition(adjusted_pos)
+        self.edit_widget.setTextCursor(cursor)
+
         # Install event filter to handle keyboard shortcuts while editing
         self.edit_widget.installEventFilter(self)
         
