@@ -109,7 +109,7 @@ class DatabaseManager:
             
             if activity_type == 'created':
                 query = """
-                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time,
                            'created' as activity_type, n.created_at as activity_time
                     FROM notes n
                     LEFT JOIN tasks t ON n.id = t.note_id
@@ -119,7 +119,7 @@ class DatabaseManager:
                 cursor = conn.execute(query, (date_str,))
             elif activity_type == 'modified':
                 query = """
-                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time,
                            'modified' as activity_type, n.modified_at as activity_time
                     FROM notes n
                     LEFT JOIN tasks t ON n.id = t.note_id
@@ -130,7 +130,7 @@ class DatabaseManager:
             else:  # 'all'
                 query = """
                     SELECT * FROM (
-                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time,
                                'created' as activity_type, n.created_at as activity_time
                         FROM notes n
                         LEFT JOIN tasks t ON n.id = t.note_id
@@ -138,7 +138,7 @@ class DatabaseManager:
                         
                         UNION
                         
-                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time,
                                'modified' as activity_type, n.modified_at as activity_time
                         FROM notes n
                         LEFT JOIN tasks t ON n.id = t.note_id
@@ -146,7 +146,7 @@ class DatabaseManager:
                         
                         UNION
                         
-                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at,
+                        SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time,
                                'completed' as activity_type, t.completed_at as activity_time
                         FROM notes n
                         JOIN tasks t ON n.id = t.note_id
@@ -238,7 +238,13 @@ class DatabaseManager:
                 conn.execute("ALTER TABLE tasks ADD COLUMN completed_at TIMESTAMP")
             except sqlite3.OperationalError:
                 pass  # Column already exists
-            
+
+            # Add reminder_time column to tasks table if it doesn't exist
+            try:
+                conn.execute("ALTER TABLE tasks ADD COLUMN reminder_time DATETIME")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
             conn.commit()
     
     def get_children(self, parent_id: int) -> List[Dict]:
@@ -246,7 +252,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time
                 FROM notes n
                 LEFT JOIN tasks t ON n.id = t.note_id
                 WHERE n.parent_id = ? 
@@ -362,7 +368,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time
                 FROM notes n
                 LEFT JOIN tasks t ON n.id = t.note_id
                 WHERE n.id = ?
@@ -413,21 +419,39 @@ class DatabaseManager:
         """Update start or due date for a task"""
         if date_type not in ['start_date', 'due_date']:
             raise ValueError("date_type must be 'start_date' or 'due_date'")
-        
+
         with sqlite3.connect(self.db_path) as conn:
             # Ensure task exists
             cursor = conn.execute("SELECT note_id FROM tasks WHERE note_id = ?", (note_id,))
             if not cursor.fetchone():
                 # Create task if it doesn't exist with default priority 4
                 conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, 'active', ?)", (note_id, 4))
-            
+
             # Update the date
             date_str = date_value.isoformat() if date_value else None
             conn.execute(f"UPDATE tasks SET {date_type} = ? WHERE note_id = ?", (date_str, note_id))
-            
+
             # Update the note's modified timestamp since metadata changed
             conn.execute("UPDATE notes SET modified_at = CURRENT_TIMESTAMP WHERE id = ?", (note_id,))
-            
+
+            conn.commit()
+
+    def update_task_reminder(self, note_id: int, reminder_time: datetime):
+        """Update reminder time for a task"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Ensure task exists
+            cursor = conn.execute("SELECT note_id FROM tasks WHERE note_id = ?", (note_id,))
+            if not cursor.fetchone():
+                # Create task if it doesn't exist with default priority 4
+                conn.execute("INSERT INTO tasks (note_id, status, priority) VALUES (?, 'active', ?)", (note_id, 4))
+
+            # Update the reminder time
+            reminder_str = reminder_time.isoformat() if reminder_time else None
+            conn.execute("UPDATE tasks SET reminder_time = ? WHERE note_id = ?", (reminder_str, note_id))
+
+            # Update the note's modified timestamp since metadata changed
+            conn.execute("UPDATE notes SET modified_at = CURRENT_TIMESTAMP WHERE id = ?", (note_id,))
+
             conn.commit()
         
         # Auto-commit to git
@@ -538,7 +562,7 @@ class DatabaseManager:
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute("""
-                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at
+                SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.completed_at, t.reminder_time
                 FROM notes n
                 LEFT JOIN tasks t ON n.id = t.note_id
                 WHERE n.content LIKE ?

@@ -3872,7 +3872,7 @@ class MainWindow(QMainWindow):
         start_layout.addWidget(self.detail_start_date)
         self.task_fields_layout.addLayout(start_layout)
         
-        # Due date/time  
+        # Due date/time
         due_layout = QHBoxLayout()
         due_layout.addWidget(QLabel("Due:"))
         self.detail_due_date = QLineEdit()
@@ -3880,7 +3880,16 @@ class MainWindow(QMainWindow):
         self.detail_due_date.editingFinished.connect(self.update_due_date)
         due_layout.addWidget(self.detail_due_date)
         self.task_fields_layout.addLayout(due_layout)
-        
+
+        # Reminder time
+        reminder_layout = QHBoxLayout()
+        reminder_layout.addWidget(QLabel("Reminder:"))
+        self.detail_reminder_time = QLineEdit()
+        self.detail_reminder_time.setPlaceholderText("e.g., '1 hour before', 'tomorrow 9am'")
+        self.detail_reminder_time.editingFinished.connect(self.update_reminder_time)
+        reminder_layout.addWidget(self.detail_reminder_time)
+        self.task_fields_layout.addLayout(reminder_layout)
+
         # Priority
         priority_layout = QHBoxLayout()
         priority_layout.addWidget(QLabel("Priority:"))
@@ -4375,7 +4384,7 @@ class MainWindow(QMainWindow):
                 else:
                     self.detail_start_date.setText('')
                 
-                due_date = note_data.get('due_date') 
+                due_date = note_data.get('due_date')
                 if due_date:
                     try:
                         dt = datetime.fromisoformat(due_date)
@@ -4391,7 +4400,25 @@ class MainWindow(QMainWindow):
                         self.detail_due_date.setText(due_date)
                 else:
                     self.detail_due_date.setText('')
-                
+
+                # Reminder time
+                reminder_time = note_data.get('reminder_time')
+                if reminder_time:
+                    try:
+                        dt = datetime.fromisoformat(reminder_time)
+                        # If no timezone info, assume it's local time
+                        if dt.tzinfo is None:
+                            # Display as local time
+                            self.detail_reminder_time.setText(dt.strftime('%a %m/%d/%Y %I:%M %p'))
+                        else:
+                            # Convert to local time
+                            local_dt = dt.astimezone()
+                            self.detail_reminder_time.setText(local_dt.strftime('%a %m/%d/%Y %I:%M %p'))
+                    except:
+                        self.detail_reminder_time.setText(reminder_time)
+                else:
+                    self.detail_reminder_time.setText('')
+
                 # Completed at
                 completed_at = note_data.get('completed_at')
                 if completed_at and task_status == 'complete':
@@ -4767,7 +4794,50 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Error updating due date: {str(e)}", 3000)
         finally:
             self._updating_dates = False
-    
+
+    def update_reminder_time(self):
+        """Update the reminder time for the current task"""
+        if not hasattr(self, 'current_task_id') or not self.current_task_id:
+            return
+
+        # Prevent loops during programmatic updates
+        if hasattr(self, '_updating_reminder') and self._updating_reminder:
+            return
+
+        self._updating_reminder = True
+
+        text = self.detail_reminder_time.text().strip()
+        print(f"Parsing reminder time: '{text}'")
+        parsed_time = parse_natural_date(text) if text else None
+        print(f"Parsed result: {parsed_time}")
+
+        try:
+            self.db.update_task_reminder(self.current_task_id, parsed_time)
+
+            # Refresh the note data from database to get updated reminder
+            updated_note_data = self.db.get_note(self.current_task_id)
+            if updated_note_data:
+                # Update the tree item's data
+                selected_items = [item for item in self.tree_widget.selectedItems()
+                                 if isinstance(item, EditableTreeItem)]
+                if selected_items:
+                    selected_items[0].note_data = updated_note_data
+                    selected_items[0].update_display()
+
+            if parsed_time:
+                # Update display with parsed result
+                self.detail_reminder_time.setText(parsed_time.strftime('%m/%d/%Y %I:%M %p'))
+                self.status_bar.showMessage(f"Reminder set to {parsed_time.strftime('%m/%d/%Y %I:%M %p')}", 2000)
+            else:
+                if text:  # User entered something but it didn't parse
+                    self.status_bar.showMessage(f"Could not parse '{text}' as a date", 3000)
+                else:
+                    self.status_bar.showMessage("Reminder cleared", 2000)
+        except Exception as e:
+            self.status_bar.showMessage(f"Error updating reminder: {str(e)}", 3000)
+        finally:
+            self._updating_reminder = False
+
     def update_priority(self):
         """Update the priority for the current task"""
         if not hasattr(self, 'current_task_id') or not self.current_task_id:
@@ -5790,41 +5860,54 @@ class MainWindow(QMainWindow):
                 self.snoozed_reminders.clear()
                 self.last_reminder_reset = today
 
-            # Get all active tasks
+            # Get all active tasks with due dates or reminder times
             with sqlite3.connect(self.db.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
-                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date
+                    SELECT n.*, t.status as task_status, t.priority, t.start_date, t.due_date, t.reminder_time
                     FROM notes n
                     JOIN tasks t ON n.id = t.note_id
-                    WHERE t.status = 'active' AND t.due_date IS NOT NULL
+                    WHERE t.status = 'active' AND (t.due_date IS NOT NULL OR t.reminder_time IS NOT NULL)
                 """)
                 tasks = [dict(row) for row in cursor.fetchall()]
 
             now = datetime.now()
-            reminder_threshold = now + timedelta(hours=24)
 
             for task in tasks:
+                reminder_time = task.get('reminder_time')
                 due_date = task.get('due_date')
-                if not due_date:
-                    continue
 
-                try:
-                    due_dt = datetime.fromisoformat(due_date)
-                    # Check if task is due within 24 hours and not already reminded
-                    if now <= due_dt <= reminder_threshold:
-                        task_id = task['id']
-                        # Skip tasks that were auto-dismissed recently (still snoozed)
-                        snooze_until = self.snoozed_reminders.get(task_id)
-                        if snooze_until is not None and now < snooze_until:
-                            continue
-                        # Check if we already have a notification for this task OR it was dismissed
-                        if (task_id not in self.dismissed_reminders and
-                            not any(notif.task_id == task_id for notif in self.reminder_notifications)):
-                            self.show_task_reminder(task)
+                # Determine when to show the reminder
+                should_remind = False
 
-                except Exception as e:
-                    print(f"Error parsing due date for task {task['id']}: {e}")
+                if reminder_time:
+                    # Custom reminder time set - check if we've reached it
+                    try:
+                        reminder_dt = datetime.fromisoformat(reminder_time)
+                        if now >= reminder_dt:
+                            should_remind = True
+                    except Exception as e:
+                        print(f"Error parsing reminder time for task {task['id']}: {e}")
+                elif due_date:
+                    # No custom reminder - use default 24 hours before due date
+                    try:
+                        due_dt = datetime.fromisoformat(due_date)
+                        reminder_threshold = now + timedelta(hours=24)
+                        if now <= due_dt <= reminder_threshold:
+                            should_remind = True
+                    except Exception as e:
+                        print(f"Error parsing due date for task {task['id']}: {e}")
+
+                if should_remind:
+                    task_id = task['id']
+                    # Skip tasks that were auto-dismissed recently (still snoozed)
+                    snooze_until = self.snoozed_reminders.get(task_id)
+                    if snooze_until is not None and now < snooze_until:
+                        continue
+                    # Check if we already have a notification for this task OR it was dismissed
+                    if (task_id not in self.dismissed_reminders and
+                        not any(notif.task_id == task_id for notif in self.reminder_notifications)):
+                        self.show_task_reminder(task)
 
         except Exception as e:
             print(f"Error checking task reminders: {e}")
